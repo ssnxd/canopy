@@ -1,0 +1,22 @@
+# Local Go cache used by repository commands.
+.gocache/
+
+# Go build and test artifacts.
+bin/
+*.test
+*.out
+coverage/
+coverage.*
+
+# Local configuration and secrets.
+.env
+.env.*
+!.env.example
+
+# OS and editor files.
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*.swo

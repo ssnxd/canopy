@@ -1,0 +1,257 @@
+package canopy
+
+import (
+	"context"
+	"net/url"
+	"testing"
+	"time"
+
+	authoauth "github.com/ssnxd/canopy/oauth"
+	"golang.org/x/oauth2"
+)
+
+type fakeOAuthProvider struct {
+	id              string
+	email           string
+	accountID       string
+	lastVerifier    string
+	lastNonce       string
+	profileProvider string
+	refreshErr      error
+	refreshedToken  *oauth2.Token
+}
+
+func (p *fakeOAuthProvider) ID() string { return p.id }
+
+func (p *fakeOAuthProvider) Config(ctx context.Context) (*oauth2.Config, error) {
+	return &oauth2.Config{
+		ClientID:     "client",
+		ClientSecret: "secret",
+		RedirectURL:  "https://app.example.test/callback/" + p.id,
+		Scopes:       []string{"openid", "email", "profile"},
+		Endpoint: oauth2.Endpoint{
+			AuthURL:  "https://" + p.id + ".example.test/auth",
+			TokenURL: "https://" + p.id + ".example.test/token",
+		},
+	}, nil
+}
+
+func (p *fakeOAuthProvider) AuthCodeOptions(opts authoauth.StartOptions) []oauth2.AuthCodeOption {
+	p.lastNonce = opts.Nonce
+	return []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(opts.PKCEVerifier)}
+}
+
+func (p *fakeOAuthProvider) Exchange(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	p.lastVerifier = verifier
+	return &oauth2.Token{
+		AccessToken:  "access-token",
+		RefreshToken: "refresh-token",
+		Expiry:       time.Now().Add(time.Hour),
+	}, nil
+}
+
+func (p *fakeOAuthProvider) Refresh(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	if p.refreshErr != nil {
+		return nil, p.refreshErr
+	}
+	if p.refreshedToken != nil {
+		return p.refreshedToken, nil
+	}
+	return &oauth2.Token{
+		AccessToken:  "new-access-token",
+		RefreshToken: refreshToken,
+		Expiry:       time.Now().Add(2 * time.Hour),
+	}, nil
+}
+
+func (p *fakeOAuthProvider) Profile(ctx context.Context, token *oauth2.Token, nonce string) (*authoauth.Profile, error) {
+	if nonce != p.lastNonce {
+		return nil, ErrInvalidState
+	}
+	providerID := p.profileProvider
+	if providerID == "" {
+		providerID = p.id
+	}
+	return &authoauth.Profile{
+		ProviderID:           providerID,
+		AccountID:            p.accountID,
+		Email:                p.email,
+		EmailVerified:        true,
+		Name:                 "OAuth User",
+		Image:                "https://example.test/avatar.png",
+		AccessToken:          token.AccessToken,
+		RefreshToken:         token.RefreshToken,
+		AccessTokenExpiresAt: &token.Expiry,
+	}, nil
+}
+
+func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
+	provider := &fakeOAuthProvider{
+		id:        "google",
+		email:     "oauth@example.com",
+		accountID: "google-sub",
+		refreshedToken: (&oauth2.Token{
+			AccessToken:  "rotated-access-token",
+			RefreshToken: "rotated-refresh-token",
+			Expiry:       time.Now().Add(3 * time.Hour),
+		}).WithExtra(map[string]any{"scope": "openid email profile calendar"}),
+	}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	start, binding, err := auth.API().SignInSocial(ctx, SignInSocialInput{Provider: "google"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, _, _, _, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+		Provider:     "google",
+		Code:         "auth-code",
+		State:        stateFromURL(t, start.URL),
+		StateBinding: binding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	refreshed, err := auth.API().RefreshProviderToken(ctx, RefreshProviderTokenInput{
+		UserID:     data.User.ID,
+		ProviderID: "google",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if refreshed.AccessToken != "rotated-access-token" || refreshed.RefreshToken != "rotated-refresh-token" {
+		t.Fatalf("unexpected refreshed token: %#v", refreshed)
+	}
+	if refreshed.Scope != "openid email profile calendar" {
+		t.Fatalf("scope = %q", refreshed.Scope)
+	}
+}
+
+func TestRefreshProviderTokenWithoutRefreshToken(t *testing.T) {
+	store := newMemoryStore()
+	provider := &fakeOAuthProvider{id: "apple"}
+	auth, err := New(Config{
+		Store:     store,
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	user := &User{ID: "usr_1", Name: "Ada", Email: "ada@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateAccount(context.Background(), &Account{
+		ID:         "acc_1",
+		UserID:     user.ID,
+		AccountID:  "apple-sub",
+		ProviderID: "apple",
+		CreatedAt:  now,
+		UpdatedAt:  now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_, err = auth.API().RefreshProviderToken(context.Background(), RefreshProviderTokenInput{
+		UserID:     user.ID,
+		ProviderID: "apple",
+	})
+	if err != ErrNoRefreshToken {
+		t.Fatalf("err = %v, want ErrNoRefreshToken", err)
+	}
+}
+
+func TestOAuthFlowCreatesSessionAndRejectsReplay(t *testing.T) {
+	provider := &fakeOAuthProvider{id: "google", email: "oauth@example.com", accountID: "google-sub"}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	start, binding, err := auth.API().SignInSocial(ctx, SignInSocialInput{Provider: "google"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := stateFromURL(t, start.URL)
+	data, token, _, _, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+		Provider:     "google",
+		Code:         "auth-code",
+		State:        state,
+		StateBinding: binding,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if token == "" || data.User.Email != "oauth@example.com" {
+		t.Fatalf("unexpected oauth session: token=%q data=%#v", token, data)
+	}
+	if provider.lastVerifier == "" {
+		t.Fatal("PKCE verifier was not passed to provider exchange")
+	}
+	_, _, _, _, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+		Provider:     "google",
+		Code:         "auth-code",
+		State:        state,
+		StateBinding: binding,
+	})
+	if err == nil {
+		t.Fatal("expected replayed OAuth state to be rejected")
+	}
+}
+
+func TestOAuthRejectsSameEmailAccountLinking(t *testing.T) {
+	provider := &fakeOAuthProvider{id: "google", email: "ada@example.com", accountID: "google-sub"}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := auth.API().SignUpEmail(ctx, SignUpEmailInput{
+		Name:     "Ada",
+		Email:    "ada@example.com",
+		Password: "correct-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	start, binding, err := auth.API().SignInSocial(ctx, SignInSocialInput{Provider: "google"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, _, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+		Provider:     "google",
+		Code:         "auth-code",
+		State:        stateFromURL(t, start.URL),
+		StateBinding: binding,
+	})
+	if err != ErrAccountLinking {
+		t.Fatalf("err = %v, want ErrAccountLinking", err)
+	}
+}
+
+func stateFromURL(t *testing.T, raw string) string {
+	t.Helper()
+	u, err := url.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	state := u.Query().Get("state")
+	if state == "" {
+		t.Fatalf("auth url missing state: %s", raw)
+	}
+	return state
+}
