@@ -48,6 +48,7 @@ go get github.com/ssnxd/canopy/store/postgres
 go get github.com/ssnxd/canopy/providers/google
 go get github.com/ssnxd/canopy/providers/apple
 go get github.com/ssnxd/canopy/ratelimit
+go get github.com/lib/pq
 ```
 
 ## Quick Start
@@ -68,6 +69,7 @@ import (
 	"github.com/ssnxd/canopy/providers/google"
 	"github.com/ssnxd/canopy/ratelimit"
 	"github.com/ssnxd/canopy/store/postgres"
+	_ "github.com/lib/pq"
 )
 
 func main() {
@@ -116,7 +118,7 @@ func main() {
 }
 ```
 
-Use a real Postgres driver in your application, such as `github.com/jackc/pgx/v5/stdlib` or `github.com/lib/pq`.
+`database/sql` drivers are registered by side-effect imports in the application binary. If you use `sql.Open("postgres", ...)`, import `github.com/lib/pq` as shown above. If you prefer pgx, import `github.com/jackc/pgx/v5/stdlib` and open the database with `sql.Open("pgx", ...)`.
 
 ## Database
 
