@@ -11,7 +11,6 @@ var (
 	ErrExpiredToken               = errors.New("canopy: expired token")
 	ErrProviderFailure            = errors.New("canopy: provider failure")
 	ErrStorageFailure             = errors.New("canopy: storage failure")
-	ErrRateLimited                = errors.New("canopy: rate limited")
 	ErrAccountLinking             = errors.New("canopy: account linking required")
 	ErrNoRefreshToken             = errors.New("canopy: no provider refresh token")
 	ErrProviderTokenRefreshFailed = errors.New("canopy: provider token refresh failed")

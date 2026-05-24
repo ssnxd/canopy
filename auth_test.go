@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -21,14 +20,12 @@ func TestConfigRequiresProductionSecret(t *testing.T) {
 	}
 }
 
-func TestEmailSignInCreatesFreshTokensAndReportsRateLimit(t *testing.T) {
+func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	store := newMemoryStore()
-	limiter := &testRateLimiter{}
 	audit := &testAuditLogger{}
 	auth, err := New(Config{
 		Store:       store,
 		Secret:      "dev-secret-with-enough-test-entropy",
-		RateLimiter: limiter,
 		AuditLogger: audit,
 	})
 	if err != nil {
@@ -56,29 +53,8 @@ func TestEmailSignInCreatesFreshTokensAndReportsRateLimit(t *testing.T) {
 	if firstToken == secondToken {
 		t.Fatal("sign-in reused an existing session token")
 	}
-	if len(limiter.reports) != 1 || !limiter.reports[0] {
-		t.Fatalf("rate limiter reports = %#v, want one success", limiter.reports)
-	}
 	if len(audit.events) == 0 || audit.events[len(audit.events)-1].Type != "sign_in.email.succeeded" {
 		t.Fatalf("missing success audit event: %#v", audit.events)
-	}
-}
-
-func TestSignInRateLimited(t *testing.T) {
-	auth, err := New(Config{
-		Store:       newMemoryStore(),
-		Secret:      "dev-secret-with-enough-test-entropy",
-		RateLimiter: &testRateLimiter{allowErr: ErrRateLimited},
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	_, _, err = auth.API().SignInEmail(context.Background(), SignInEmailInput{
-		Email:    "ada@example.com",
-		Password: "correct-password",
-	})
-	if !errors.Is(err, ErrRateLimited) {
-		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
 }
 

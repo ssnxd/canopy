@@ -8,7 +8,6 @@ Canopy is a Go module at `github.com/ssnxd/canopy`. The root package contains th
 - `providers/google/`, `providers/apple/`: first-party OAuth providers.
 - `password/`: password hashing interfaces and Argon2id implementation.
 - `sessions/`: session cookie configuration and helpers.
-- `ratelimit/`: built-in in-memory rate limiter.
 - `store/postgres/`: Postgres adapter and migrations.
 
 Tests live next to the code as `*_test.go`. There are no frontend assets in this repository.
@@ -33,7 +32,7 @@ Provider IDs should be stable lowercase strings, for example `google`, `apple`, 
 
 ## Testing Guidelines
 
-Use Go’s standard `testing` package. Name tests as `TestFeatureBehavior`, for example `TestOAuthFlowCreatesSessionAndRejectsReplay`. Security-sensitive changes need negative tests for expiry, replay, revocation, invalid tokens, account-linking rejection, and rate limiting where relevant.
+Use Go’s standard `testing` package. Name tests as `TestFeatureBehavior`, for example `TestOAuthFlowCreatesSessionAndRejectsReplay`. Security-sensitive changes need negative tests for expiry, replay, revocation, invalid tokens, and account-linking rejection where relevant.
 
 Run both tests and vet before submitting changes.
 
@@ -45,5 +44,4 @@ Pull requests should include a summary, test results, public API changes, and RE
 
 ## Security & Configuration Tips
 
-Do not weaken auth defaults without documenting the tradeoff. Keep provider token refresh separate from session lookup. Do not silently link users by email across providers. For multi-instance deployments, prefer a shared `RateLimiter` implementation over the in-memory limiter.
-
+Do not weaken auth defaults without documenting the tradeoff. Keep provider token refresh separate from session lookup. Do not silently link users by email across providers. For browser-facing deployments, document that applications should apply rate limiting before requests reach Canopy handlers.

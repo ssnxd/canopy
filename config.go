@@ -50,23 +50,6 @@ type noopAuditLogger struct{}
 
 func (noopAuditLogger) LogAuthEvent(ctx context.Context, event AuditEvent) {}
 
-type RateLimitRequest struct {
-	Route     string
-	Email     string
-	IPAddress string
-	UserAgent string
-}
-
-type RateLimiter interface {
-	Allow(ctx context.Context, request RateLimitRequest) error
-	Report(ctx context.Context, request RateLimitRequest, success bool)
-}
-
-type noopRateLimiter struct{}
-
-func (noopRateLimiter) Allow(ctx context.Context, request RateLimitRequest) error          { return nil }
-func (noopRateLimiter) Report(ctx context.Context, request RateLimitRequest, success bool) {}
-
 type EmailVerificationMessage struct {
 	User        User
 	Email       string
@@ -117,7 +100,6 @@ type Config struct {
 	PasswordMinLength        int
 	PasswordMaxLength        int
 	PasswordHasher           password.Hasher
-	RateLimiter              RateLimiter
 	AuditLogger              AuditLogger
 	EmailSender              EmailSender
 	AccountLinkingPolicy     AccountLinkingPolicy
@@ -148,9 +130,6 @@ func (c *Config) setDefaults() {
 	}
 	if c.PasswordHasher == nil {
 		c.PasswordHasher = password.DefaultHasher()
-	}
-	if c.RateLimiter == nil {
-		c.RateLimiter = noopRateLimiter{}
 	}
 	if c.AuditLogger == nil {
 		c.AuditLogger = noopAuditLogger{}

@@ -540,31 +540,22 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 
 func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SessionData, string, error) {
 	email := normalizeEmail(in.Email)
-	rl := RateLimitRequest{Route: "/sign-in/email", Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent}
-	if err := s.cfg.RateLimiter.Allow(ctx, rl); err != nil {
-		s.audit(ctx, AuditEvent{Type: "sign_in.email.rate_limited", Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
-		return nil, "", ErrRateLimited
-	}
 	user, err := s.cfg.Store.FindUserByEmail(ctx, email)
 	if err != nil {
-		s.cfg.RateLimiter.Report(ctx, rl, false)
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
 		return nil, "", ErrInvalidCredentials
 	}
 	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
 	if err != nil || account.Password == "" {
-		s.cfg.RateLimiter.Report(ctx, rl, false)
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
 		return nil, "", ErrInvalidCredentials
 	}
 	ok, needsRehash, err := s.cfg.PasswordHasher.Verify(ctx, in.Password, account.Password)
 	if err != nil || !ok {
-		s.cfg.RateLimiter.Report(ctx, rl, false)
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
 		return nil, "", ErrInvalidCredentials
 	}
 	if s.cfg.RequireEmailVerification && !user.EmailVerified {
-		s.cfg.RateLimiter.Report(ctx, rl, false)
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrUnverifiedEmail.Error()})
 		return nil, "", ErrUnverifiedEmail
 	}
@@ -576,7 +567,6 @@ func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*Sessio
 		}
 	}
 	data, token, err := s.createSession(ctx, *user, in.RememberMe, in.IPAddress, in.UserAgent)
-	s.cfg.RateLimiter.Report(ctx, rl, err == nil)
 	if err == nil {
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.succeeded", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
 	}

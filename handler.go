@@ -303,8 +303,6 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "UNVERIFIED_EMAIL", "Email is not verified"
 	case errors.Is(err, ErrConflict):
 		status, code, message = http.StatusConflict, "CONFLICT", "Resource already exists"
-	case errors.Is(err, ErrRateLimited):
-		status, code, message = http.StatusTooManyRequests, "RATE_LIMITED", "Too many requests"
 	case errors.Is(err, ErrAccountLinking):
 		status, code, message = http.StatusConflict, "ACCOUNT_LINKING_REQUIRED", "Account linking requires explicit confirmation"
 	case errors.Is(err, ErrNoRefreshToken):

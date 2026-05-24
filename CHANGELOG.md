@@ -11,7 +11,6 @@ Canopy follows semantic versioning after the first stable release. Until v1.0.0,
 - Transactional store APIs for atomic user/account/session creation.
 - Live Google and Apple OAuth integration tests.
 - Account linking confirmation flow.
-- Distributed rate limiter implementation.
 - Additional OAuth providers.
 - Email provider examples.
 - MySQL and SQLite stores.
@@ -33,7 +32,6 @@ Canopy follows semantic versioning after the first stable release. Until v1.0.0,
 - Apple ES256 client-secret JWT helper.
 - OAuth state signing, state cookie binding, PKCE, nonce validation, and replay prevention.
 - Provider access-token refresh API.
-- Built-in in-memory rate limiter.
 - Audit logging interface.
 - App hooks for user creation, sign-in, sign-out, OAuth, email verification, and password reset.
 - Postgres store and migrations.
@@ -43,7 +41,5 @@ Canopy follows semantic versioning after the first stable release. Until v1.0.0,
 
 - User/account/session creation is not yet transactional.
 - OAuth tests use fake providers; live provider tests are still planned.
-- Built-in rate limiter is process-local.
 - Email delivery is callback-based through `EmailSender`; no first-party email provider package is included yet.
 - Account linking is safely rejected but the confirmation UX/API is not implemented yet.
-

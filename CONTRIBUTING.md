@@ -102,7 +102,6 @@ Good first feature areas:
 - Account linking confirmation flow.
 - Session listing and device management.
 - Email provider examples.
-- Redis-backed rate limiter.
 - MySQL store.
 - SQLite store.
 
@@ -139,4 +138,3 @@ Before tagging a release:
 - Public packages have package comments.
 - New public APIs have tests.
 - Known caveats are documented.
-

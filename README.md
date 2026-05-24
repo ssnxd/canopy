@@ -1,6 +1,6 @@
 # Canopy
 
-Canopy is a Go authentication library for API servers. It provides email/password auth, Google and Apple OAuth sign-in, database-backed opaque sessions, rate-limiting hooks, audit hooks, and a Postgres storage adapter.
+Canopy is a Go authentication library for API servers. It provides email/password auth, Google and Apple OAuth sign-in, database-backed opaque sessions, audit hooks, and a Postgres storage adapter.
 
 Canopy is inspired by [Better Auth](https://better-auth.com/): the core entity names, route names, and product direction intentionally follow the same mental model. Canopy is not a Better Auth port and it is not a hosted service. It is a Go-native library built around `net/http`, explicit interfaces, typed errors, and server-side session storage.
 
@@ -27,7 +27,6 @@ Implemented today:
 - Session cookies and session middleware.
 - Sign-out and session revocation.
 - Provider access-token refresh API.
-- Built-in in-memory rate limiter.
 - Audit logging interface.
 - Postgres store and schema migration.
 - Typed public errors for common auth failures.
@@ -36,7 +35,7 @@ Not implemented yet:
 
 - Magic link, passkeys, two-factor auth, organization/team features, admin APIs, and plugins.
 - First-party adapters for Gin, Echo, Chi, Gorilla, etc. `net/http` works with most routers directly.
-- Distributed rate limiting. The built-in limiter is process-local.
+- Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
 - Explicit account-linking confirmation flow. v1 rejects unsafe implicit linking.
 
@@ -47,7 +46,6 @@ go get github.com/ssnxd/canopy
 go get github.com/ssnxd/canopy/store/postgres
 go get github.com/ssnxd/canopy/providers/google
 go get github.com/ssnxd/canopy/providers/apple
-go get github.com/ssnxd/canopy/ratelimit
 go get github.com/lib/pq
 ```
 
@@ -67,7 +65,6 @@ import (
 	"github.com/ssnxd/canopy"
 	"github.com/ssnxd/canopy/oauth"
 	"github.com/ssnxd/canopy/providers/google"
-	"github.com/ssnxd/canopy/ratelimit"
 	"github.com/ssnxd/canopy/store/postgres"
 	_ "github.com/lib/pq"
 )
@@ -90,7 +87,6 @@ func main() {
 		TrustedOrigins: []string{
 			"https://app.example.com",
 		},
-		RateLimiter: ratelimit.New(ratelimit.Config{}),
 		Providers: []oauth.Provider{
 			google.Provider{
 				ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
@@ -160,7 +156,6 @@ type Config struct {
 	PasswordMaxLength        int
 	PasswordHasher           password.Hasher
 
-	RateLimiter          canopy.RateLimiter
 	AuditLogger          canopy.AuditLogger
 	EmailSender          canopy.EmailSender
 	AccountLinkingPolicy canopy.AccountLinkingPolicy
@@ -197,7 +192,7 @@ Production requirements:
 - `Secret` must be at least 32 bytes in production.
 - Cookies are `Secure` in production.
 - Set `TrustedOrigins` for browser-facing deployments.
-- Use a shared rate limiter in multi-instance deployments if brute-force protection must be global.
+- Apply rate limiting before Canopy handlers in browser-facing deployments.
 
 ## HTTP API
 
@@ -659,40 +654,24 @@ Apple caveats:
 
 ## Rate Limiting
 
-Canopy calls `RateLimiter.Allow` before email/password sign-in and `RateLimiter.Report` after success or failure.
+Canopy does not include built-in rate limiting. Apply rate limits in your application before requests reach Canopy's HTTP handler or service calls. This keeps brute-force protection close to your deployment topology, whether that is a reverse proxy, API gateway, shared Redis-backed middleware, or framework-specific middleware.
 
 ```go
-type RateLimiter interface {
-	Allow(ctx context.Context, request canopy.RateLimitRequest) error
-	Report(ctx context.Context, request canopy.RateLimitRequest, success bool)
+func rateLimit(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !allowRequest(r) {
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
 }
+
+mux := http.NewServeMux()
+mux.Handle("/auth/", rateLimit(http.StripPrefix("/auth", auth.Handler())))
 ```
 
-Use the built-in limiter:
-
-```go
-limiter := ratelimit.New(ratelimit.Config{
-	FailureLimit:  5,
-	FailureWindow: 15 * time.Minute,
-})
-
-auth, err := canopy.New(canopy.Config{
-	Store:       store,
-	Secret:      os.Getenv("CANOPY_SECRET"),
-	RateLimiter: limiter,
-})
-```
-
-Inspect attempts:
-
-```go
-snapshot := limiter.Snapshot(canopy.RateLimitRequest{
-	Email:     "ada@example.com",
-	IPAddress: "203.0.113.10",
-})
-```
-
-The built-in limiter is in-memory. For horizontally scaled production systems, implement `RateLimiter` with Redis, your gateway, or another shared system.
+For email/password sign-in, limit by IP address and normalized email where practical. In multi-instance deployments, use shared state at the gateway or middleware layer so attempts are counted consistently across instances.
 
 ## Email Delivery
 
@@ -881,7 +860,6 @@ Canopy exposes typed sentinel errors:
 - `ErrExpiredToken`
 - `ErrProviderFailure`
 - `ErrStorageFailure`
-- `ErrRateLimited`
 - `ErrAccountLinking`
 - `ErrNoRefreshToken`
 - `ErrProviderTokenRefreshFailed`
@@ -926,7 +904,7 @@ The current `Store` interface performs user, account, and session writes as sepa
 
 Rate limiting:
 
-The built-in limiter is process-local. It is useful for one-instance deployments and tests. Use a shared implementation for multi-instance production.
+Canopy does not enforce request limits internally. Add rate limiting in middleware, a gateway, or another application-owned layer before auth requests reach Canopy.
 
 Provider token refresh:
 
@@ -951,7 +929,6 @@ The intent is to grow Canopy toward Better Auth feature parity while keeping Go-
 - Admin user management APIs.
 - Account linking confirmation flows.
 - More OAuth providers.
-- Redis-backed rate limiter.
 - MySQL and SQLite stores.
 - Transactional store APIs.
 - Session listing APIs.

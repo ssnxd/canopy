@@ -207,19 +207,6 @@ func cloneAccount(a *Account) (*Account, error) {
 	return &cp, nil
 }
 
-type testRateLimiter struct {
-	allowErr error
-	reports  []bool
-}
-
-func (r *testRateLimiter) Allow(ctx context.Context, request RateLimitRequest) error {
-	return r.allowErr
-}
-
-func (r *testRateLimiter) Report(ctx context.Context, request RateLimitRequest, success bool) {
-	r.reports = append(r.reports, success)
-}
-
 type testAuditLogger struct {
 	events []AuditEvent
 }
