@@ -1,7 +1,11 @@
 package canopy
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 	"time"
@@ -207,6 +211,59 @@ func TestOAuthFlowCreatesSessionAndRejectsReplay(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected replayed OAuth state to be rejected")
+	}
+}
+
+func TestHTTPOAuthFlowManagesStateAndSessionCookies(t *testing.T) {
+	provider := &fakeOAuthProvider{id: "google", email: "oauth@example.com", accountID: "google-sub"}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := auth.Handler()
+	body, _ := json.Marshal(SignInSocialInput{Provider: "google"})
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-in/social", bytes.NewReader(body))
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("start status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var start SignInSocialOutput
+	if err := json.NewDecoder(rec.Body).Decode(&start); err != nil {
+		t.Fatal(err)
+	}
+	state := stateFromURL(t, start.URL)
+	var stateCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "canopy.oauth_state" {
+			stateCookie = cookie
+		}
+	}
+	if stateCookie == nil || stateCookie.Value == "" || !stateCookie.HttpOnly {
+		t.Fatalf("missing state cookie: %#v", rec.Result().Cookies())
+	}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/callback/google?state="+url.QueryEscape(state)+"&code=auth-code", nil)
+	req.AddCookie(stateCookie)
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("callback status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var sawSessionCookie, sawClearedState bool
+	for _, cookie := range rec.Result().Cookies() {
+		switch cookie.Name {
+		case "canopy.session_token":
+			sawSessionCookie = cookie.Value != "" && cookie.HttpOnly
+		case "canopy.oauth_state":
+			sawClearedState = cookie.MaxAge < 0
+		}
+	}
+	if !sawSessionCookie || !sawClearedState {
+		t.Fatalf("callback cookies = %#v", rec.Result().Cookies())
 	}
 }
 

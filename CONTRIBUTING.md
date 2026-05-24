@@ -13,6 +13,15 @@ GOCACHE="$PWD/.gocache" go test ./...
 GOCACHE="$PWD/.gocache" go vet ./...
 ```
 
+Postgres-backed e2e tests are opt-in because they require a live database:
+
+```sh
+CANOPY_E2E_DATABASE_URL="postgres://user:pass@localhost:5432/canopy_test?sslmode=disable" \
+  GOCACHE="$PWD/.gocache" go test -tags=e2e ./...
+```
+
+Each e2e test creates and drops its own Postgres schema.
+
 Use `gofmt` on all Go changes:
 
 ```sh

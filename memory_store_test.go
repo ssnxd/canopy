@@ -100,6 +100,21 @@ func (s *memoryStore) CreateAccount(ctx context.Context, account *Account) error
 	return nil
 }
 
+func (s *memoryStore) CreateUserAccount(ctx context.Context, user *User, account *Account) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	email := normalizeEmail(user.Email)
+	accountKey := account.ProviderID + "|" + account.AccountID
+	if s.usersByEmail[email] != nil || s.accountsByKey[accountKey] != nil {
+		return ErrConflict
+	}
+	userCopy := *user
+	accountCopy := *account
+	s.usersByEmail[email] = &userCopy
+	s.accountsByKey[accountKey] = &accountCopy
+	return nil
+}
+
 func (s *memoryStore) UpdateAccount(ctx context.Context, account *Account) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

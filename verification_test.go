@@ -77,6 +77,43 @@ func TestEmailVerificationFlow(t *testing.T) {
 	}
 }
 
+func TestActionTokensRejectWrongPurposeAndExpiry(t *testing.T) {
+	sender := &testEmailSender{}
+	auth, err := New(Config{
+		Store:                    newMemoryStore(),
+		Secret:                   "dev-secret-with-enough-test-entropy",
+		RequireEmailVerification: true,
+		EmailVerificationTTL:     -time.Minute,
+		EmailSender:              sender,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_, _, err = auth.API().SignUpEmail(ctx, SignUpEmailInput{
+		Name:     "Ada",
+		Email:    "ada@example.com",
+		Password: "correct-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sender.verificationMessages) != 1 {
+		t.Fatalf("verification messages = %d, want 1", len(sender.verificationMessages))
+	}
+	if _, err := auth.API().VerifyEmail(ctx, VerifyEmailInput{Token: sender.verificationMessages[0].Token}); !errors.Is(err, ErrExpiredToken) {
+		t.Fatalf("expired token err = %v, want ErrExpiredToken", err)
+	}
+
+	resetToken, _, err := auth.API().issueActionToken(ctx, auth.API().passwordResetTokenKind(), "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.API().VerifyEmail(ctx, VerifyEmailInput{Token: resetToken}); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("wrong purpose err = %v, want ErrInvalidToken", err)
+	}
+}
+
 func TestPasswordResetFlowRevokesSessionsAndChangesPassword(t *testing.T) {
 	sender := &testEmailSender{}
 	auth, err := New(Config{

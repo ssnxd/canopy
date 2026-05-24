@@ -14,6 +14,11 @@ type httpHandler struct {
 	mux *http.ServeMux
 }
 
+type requestSession struct {
+	Data  *SessionData
+	Token string
+}
+
 func newHandler(api *Service, cfg Config) http.Handler {
 	h := &httpHandler{api: api, cfg: cfg, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /sign-up/email", h.signUpEmail)
@@ -91,19 +96,13 @@ func (h *httpHandler) refreshProviderToken(w http.ResponseWriter, r *http.Reques
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	token := bearerToken(r)
-	if token == "" {
-		if cookie, err := r.Cookie(h.cfg.Session.CookieName); err == nil {
-			token = cookie.Value
-		}
-	}
-	session, err := h.api.GetSession(r.Context(), token)
+	session, err := h.sessionFromRequest(r)
 	if err != nil {
 		writeError(w, ErrUnauthorized)
 		return
 	}
 	out, err := h.api.RefreshProviderToken(r.Context(), RefreshProviderTokenInput{
-		UserID:     session.User.ID,
+		UserID:     session.Data.User.ID,
 		ProviderID: req.ProviderID,
 	})
 	if err != nil {
@@ -128,37 +127,18 @@ func (h *httpHandler) signInSocial(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	provider := r.PathValue("provider")
-	state := r.FormValue("state")
-	code := r.FormValue("code")
-	if provider == "" || state == "" || code == "" {
-		writeError(w, ErrInvalidInput)
-		return
-	}
-	cookie, err := r.Cookie(h.cfg.OAuthStateCookieName)
-	if err != nil {
-		writeError(w, ErrInvalidState)
-		return
-	}
-	data, token, callbackURL, rememberMe, err := h.api.OAuthCallback(r.Context(), OAuthCallbackInput{
-		Provider:     provider,
-		Code:         code,
-		State:        state,
-		StateBinding: cookie.Value,
-		IPAddress:    requestIP(r),
-		UserAgent:    r.UserAgent(),
-	})
+	out, err := h.finishOAuthBrowserFlow(r)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
 	h.clearOAuthStateCookie(w)
-	h.cfg.Session.SetCookie(w, token, rememberMe)
-	if callbackURL != "" {
-		http.Redirect(w, r, callbackURL, http.StatusFound)
+	h.cfg.Session.SetCookie(w, out.Token, out.RememberMe)
+	if out.CallbackURL != "" {
+		http.Redirect(w, r, out.CallbackURL, http.StatusFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	writeJSON(w, http.StatusOK, out.Data)
 }
 
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -202,11 +182,10 @@ func (h *httpHandler) signInEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) signOut(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
-	if token == "" {
-		if cookie, err := r.Cookie(h.cfg.Session.CookieName); err == nil {
-			token = cookie.Value
-		}
+	session, _ := h.sessionFromRequest(r)
+	token := ""
+	if session != nil {
+		token = session.Token
 	}
 	if err := h.api.SignOut(r.Context(), token); err != nil {
 		writeError(w, err)
@@ -217,18 +196,42 @@ func (h *httpHandler) signOut(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) getSession(w http.ResponseWriter, r *http.Request) {
-	token := bearerToken(r)
-	if token == "" {
-		if cookie, err := r.Cookie(h.cfg.Session.CookieName); err == nil {
-			token = cookie.Value
-		}
-	}
-	data, err := h.api.GetSession(r.Context(), token)
+	session, err := h.sessionFromRequest(r)
 	if err != nil {
 		writeJSON(w, http.StatusOK, nil)
 		return
 	}
-	writeJSON(w, http.StatusOK, data)
+	writeJSON(w, http.StatusOK, session.Data)
+}
+
+func (h *httpHandler) sessionFromRequest(r *http.Request) (*requestSession, error) {
+	token := requestToken(r, h.cfg.Session.CookieName)
+	data, err := h.api.GetSession(r.Context(), token)
+	if err != nil {
+		return nil, err
+	}
+	return &requestSession{Data: data, Token: token}, nil
+}
+
+func (h *httpHandler) finishOAuthBrowserFlow(r *http.Request) (*oauthCallbackResult, error) {
+	provider := r.PathValue("provider")
+	state := r.FormValue("state")
+	code := r.FormValue("code")
+	if provider == "" || state == "" || code == "" {
+		return nil, ErrInvalidInput
+	}
+	cookie, err := r.Cookie(h.cfg.OAuthStateCookieName)
+	if err != nil {
+		return nil, ErrInvalidState
+	}
+	return h.api.oauthCallback(r.Context(), OAuthCallbackInput{
+		Provider:     provider,
+		Code:         code,
+		State:        state,
+		StateBinding: cookie.Value,
+		IPAddress:    requestIP(r),
+		UserAgent:    r.UserAgent(),
+	})
 }
 
 func (h *httpHandler) setOAuthStateCookie(w http.ResponseWriter, value string) {
@@ -274,6 +277,16 @@ func bearerToken(r *http.Request) string {
 	auth := r.Header.Get("Authorization")
 	if strings.HasPrefix(strings.ToLower(auth), "bearer ") {
 		return strings.TrimSpace(auth[7:])
+	}
+	return ""
+}
+
+func requestToken(r *http.Request, cookieName string) string {
+	if token := bearerToken(r); token != "" {
+		return token
+	}
+	if cookie, err := r.Cookie(cookieName); err == nil {
+		return cookie.Value
 	}
 	return ""
 }

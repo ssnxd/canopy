@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -92,4 +93,72 @@ func TestHTTPEmailFlowAndSessionContext(t *testing.T) {
 	if !sawSession {
 		t.Fatal("middleware did not populate session context")
 	}
+}
+
+func TestMiddlewareAcceptsBearerToken(t *testing.T) {
+	auth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, token, err := auth.API().SignUpEmail(context.Background(), SignUpEmailInput{
+		Name:     "Ada",
+		Email:    "ada@example.com",
+		Password: "correct-password",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sawSession bool
+	next := auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, sawSession = SessionFromContext(r.Context())
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Authorization", "Bearer "+token)
+	next.ServeHTTP(httptest.NewRecorder(), req)
+	if !sawSession {
+		t.Fatal("middleware did not accept bearer token")
+	}
+}
+
+func TestSignUpUsesAtomicUserAccountProvisioningWhenAvailable(t *testing.T) {
+	wantErr := errors.New("provision failed")
+	store := &failingProvisionStore{
+		memoryStore: newMemoryStore(),
+		err:         wantErr,
+	}
+	auth, err := New(Config{
+		Store:  store,
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = auth.API().SignUpEmail(context.Background(), SignUpEmailInput{
+		Name:     "Ada",
+		Email:    "ada@example.com",
+		Password: "correct-password",
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("err = %v, want %v", err, wantErr)
+	}
+	if !store.called {
+		t.Fatal("CreateUserAccount was not used")
+	}
+	if _, err := store.FindUserByEmail(context.Background(), "ada@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("FindUserByEmail err = %v, want ErrNotFound", err)
+	}
+}
+
+type failingProvisionStore struct {
+	*memoryStore
+	err    error
+	called bool
+}
+
+func (s *failingProvisionStore) CreateUserAccount(ctx context.Context, user *User, account *Account) error {
+	s.called = true
+	return s.err
 }

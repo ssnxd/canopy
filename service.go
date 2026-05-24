@@ -97,6 +97,23 @@ type Service struct {
 	providers map[string]oauth.Provider
 }
 
+type userAccountStore interface {
+	CreateUserAccount(ctx context.Context, user *User, account *Account) error
+}
+
+type oauthCallbackResult struct {
+	Data        *SessionData
+	Token       string
+	CallbackURL string
+	RememberMe  *bool
+}
+
+type actionTokenKind struct {
+	purpose   string
+	ttl       time.Duration
+	auditBase string
+}
+
 func newService(cfg Config) *Service {
 	providers := make(map[string]oauth.Provider, len(cfg.Providers))
 	for _, provider := range cfg.Providers {
@@ -159,10 +176,7 @@ func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*Sessio
 		CreatedAt:  now,
 		UpdatedAt:  now,
 	}
-	if err := s.cfg.Store.CreateUser(ctx, user); err != nil {
-		return nil, "", err
-	}
-	if err := s.cfg.Store.CreateAccount(ctx, account); err != nil {
+	if err := s.createUserAccount(ctx, user, account); err != nil {
 		return nil, "", err
 	}
 	if s.cfg.Hooks.AfterUserCreate != nil {
@@ -196,14 +210,11 @@ func (s *Service) SendEmailVerification(ctx context.Context, in SendEmailVerific
 }
 
 func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) (*User, error) {
-	payload, err := s.verifyActionToken(in.Token, verificationPurposeEmail)
+	kind := s.emailVerificationTokenKind()
+	payload, err := s.consumeActionToken(ctx, kind, in.Token)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "email_verification.failed", Success: false, Error: err.Error()})
 		return nil, err
-	}
-	if _, err := s.cfg.Store.ConsumeVerification(ctx, verificationIdentifier(verificationPurposeEmail, payload.Email), hashString(in.Token), time.Now().UTC()); err != nil {
-		s.audit(ctx, AuditEvent{Type: "email_verification.failed", Email: payload.Email, Success: false, Error: ErrInvalidToken.Error()})
-		return nil, ErrInvalidToken
 	}
 	user, err := s.cfg.Store.FindUserByEmail(ctx, payload.Email)
 	if err != nil {
@@ -240,7 +251,8 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in RequestPasswordRe
 		s.audit(ctx, AuditEvent{Type: "password_reset.requested_no_password_account", UserID: user.ID, Email: user.Email, Success: true})
 		return nil
 	}
-	token, expiresAt, err := s.createActionToken(ctx, verificationPurposePasswordReset, user.Email, s.cfg.PasswordResetTTL)
+	kind := s.passwordResetTokenKind()
+	token, expiresAt, err := s.issueActionToken(ctx, kind, user.Email)
 	if err != nil {
 		return err
 	}
@@ -263,14 +275,11 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	if len(in.NewPassword) < s.cfg.PasswordMinLength || len(in.NewPassword) > s.cfg.PasswordMaxLength {
 		return ErrInvalidInput
 	}
-	payload, err := s.verifyActionToken(in.Token, verificationPurposePasswordReset)
+	kind := s.passwordResetTokenKind()
+	payload, err := s.consumeActionToken(ctx, kind, in.Token)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "password_reset.failed", Success: false, Error: err.Error()})
 		return err
-	}
-	if _, err := s.cfg.Store.ConsumeVerification(ctx, verificationIdentifier(verificationPurposePasswordReset, payload.Email), hashString(in.Token), time.Now().UTC()); err != nil {
-		s.audit(ctx, AuditEvent{Type: "password_reset.failed", Email: payload.Email, Success: false, Error: ErrInvalidToken.Error()})
-		return ErrInvalidToken
 	}
 	user, err := s.cfg.Store.FindUserByEmail(ctx, payload.Email)
 	if err != nil {
@@ -367,41 +376,54 @@ func (s *Service) SignInSocial(ctx context.Context, in SignInSocialInput) (*Sign
 }
 
 func (s *Service) OAuthCallback(ctx context.Context, in OAuthCallbackInput) (*SessionData, string, string, *bool, error) {
+	out, err := s.oauthCallback(ctx, in)
+	if err != nil {
+		return nil, "", "", nil, err
+	}
+	return out.Data, out.Token, out.CallbackURL, out.RememberMe, nil
+}
+
+func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*oauthCallbackResult, error) {
 	provider, ok := s.providers[in.Provider]
 	if !ok {
-		return nil, "", "", nil, ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	payload, err := s.verifyOAuthState(in.State)
 	if err != nil || payload.Provider != provider.ID() || !hmac.Equal([]byte(payload.BindingHash), []byte(hashString(in.StateBinding))) {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidState.Error()})
-		return nil, "", "", nil, ErrInvalidState
+		return nil, ErrInvalidState
 	}
 	if _, err := s.cfg.Store.ConsumeVerification(ctx, oauthStateIdentifier, hashString(in.State), time.Now().UTC()); err != nil {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidState.Error()})
-		return nil, "", "", nil, ErrInvalidState
+		return nil, ErrInvalidState
 	}
 	tok, err := provider.Exchange(ctx, in.Code, payload.PKCEVerifier)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
-		return nil, "", "", nil, ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	profile, err := provider.Profile(ctx, tok, payload.Nonce)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
-		return nil, "", "", nil, ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	data, sessionToken, err := s.signInOAuthProfile(ctx, provider.ID(), profile, payload.RememberMe, in.IPAddress, in.UserAgent)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, Email: normalizeEmail(profile.Email), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
-		return nil, "", "", nil, err
+		return nil, err
 	}
 	if s.cfg.Hooks.AfterOAuth != nil {
 		if err := s.cfg.Hooks.AfterOAuth(*data); err != nil {
-			return nil, "", "", nil, err
+			return nil, err
 		}
 	}
 	s.audit(ctx, AuditEvent{Type: "oauth.callback.succeeded", UserID: data.User.ID, Email: data.User.Email, ProviderID: provider.ID(), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
-	return data, sessionToken, payload.CallbackURL, payload.RememberMe, nil
+	return &oauthCallbackResult{
+		Data:        data,
+		Token:       sessionToken,
+		CallbackURL: payload.CallbackURL,
+		RememberMe:  payload.RememberMe,
+	}, nil
 }
 
 func (s *Service) RefreshProviderToken(ctx context.Context, in RefreshProviderTokenInput) (*RefreshProviderTokenOutput, error) {
@@ -524,10 +546,7 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 		UpdatedAt:  now,
 	}
 	updateAccountFromProfile(account, profile)
-	if err := s.cfg.Store.CreateUser(ctx, user); err != nil {
-		return nil, "", err
-	}
-	if err := s.cfg.Store.CreateAccount(ctx, account); err != nil {
+	if err := s.createUserAccount(ctx, user, account); err != nil {
 		return nil, "", err
 	}
 	if s.cfg.Hooks.AfterUserCreate != nil {
@@ -620,11 +639,9 @@ func (s *Service) RevokeUserSessions(ctx context.Context, userID string) error {
 
 func (s *Service) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		cookie, err := r.Cookie(s.cfg.Session.CookieName)
-		if err == nil {
-			if data, sessionErr := s.GetSession(r.Context(), cookie.Value); sessionErr == nil {
-				r = r.WithContext(ContextWithSession(r.Context(), data))
-			}
+		token := requestToken(r, s.cfg.Session.CookieName)
+		if data, sessionErr := s.GetSession(r.Context(), token); sessionErr == nil {
+			r = r.WithContext(ContextWithSession(r.Context(), data))
 		}
 		next.ServeHTTP(w, r)
 	})
@@ -672,6 +689,16 @@ func (s *Service) createSession(ctx context.Context, user User, rememberMe *bool
 		}
 	}
 	return data, token, nil
+}
+
+func (s *Service) createUserAccount(ctx context.Context, user *User, account *Account) error {
+	if store, ok := s.cfg.Store.(userAccountStore); ok {
+		return store.CreateUserAccount(ctx, user, account)
+	}
+	if err := s.cfg.Store.CreateUser(ctx, user); err != nil {
+		return err
+	}
+	return s.cfg.Store.CreateAccount(ctx, account)
 }
 
 func normalizeEmail(email string) string {
@@ -748,7 +775,8 @@ type actionTokenPayload struct {
 }
 
 func (s *Service) sendEmailVerification(ctx context.Context, user User, callbackURL string) error {
-	token, expiresAt, err := s.createActionToken(ctx, verificationPurposeEmail, user.Email, s.cfg.EmailVerificationTTL)
+	kind := s.emailVerificationTokenKind()
+	token, expiresAt, err := s.issueActionToken(ctx, kind, user.Email)
 	if err != nil {
 		return err
 	}
@@ -767,7 +795,23 @@ func (s *Service) sendEmailVerification(ctx context.Context, user User, callback
 	return nil
 }
 
-func (s *Service) createActionToken(ctx context.Context, purpose, email string, ttl time.Duration) (string, time.Time, error) {
+func (s *Service) emailVerificationTokenKind() actionTokenKind {
+	return actionTokenKind{
+		purpose:   verificationPurposeEmail,
+		ttl:       s.cfg.EmailVerificationTTL,
+		auditBase: "email_verification",
+	}
+}
+
+func (s *Service) passwordResetTokenKind() actionTokenKind {
+	return actionTokenKind{
+		purpose:   verificationPurposePasswordReset,
+		ttl:       s.cfg.PasswordResetTTL,
+		auditBase: "password_reset",
+	}
+}
+
+func (s *Service) issueActionToken(ctx context.Context, kind actionTokenKind, email string) (string, time.Time, error) {
 	now := time.Now().UTC()
 	id, err := randomToken(18)
 	if err != nil {
@@ -775,9 +819,9 @@ func (s *Service) createActionToken(ctx context.Context, purpose, email string, 
 	}
 	payload := actionTokenPayload{
 		ID:        id,
-		Purpose:   purpose,
+		Purpose:   kind.purpose,
 		Email:     normalizeEmail(email),
-		ExpiresAt: now.Add(ttl),
+		ExpiresAt: now.Add(kind.ttl),
 		IssuedAt:  now,
 	}
 	token, err := s.signActionToken(payload)
@@ -790,7 +834,7 @@ func (s *Service) createActionToken(ctx context.Context, purpose, email string, 
 	}
 	if err := s.cfg.Store.CreateVerification(ctx, &Verification{
 		ID:         verificationID,
-		Identifier: verificationIdentifier(purpose, payload.Email),
+		Identifier: verificationIdentifier(kind.purpose, payload.Email),
 		Value:      hashString(token),
 		ExpiresAt:  payload.ExpiresAt,
 		CreatedAt:  now,
@@ -799,6 +843,18 @@ func (s *Service) createActionToken(ctx context.Context, purpose, email string, 
 		return "", time.Time{}, err
 	}
 	return token, payload.ExpiresAt, nil
+}
+
+func (s *Service) consumeActionToken(ctx context.Context, kind actionTokenKind, token string) (actionTokenPayload, error) {
+	payload, err := s.verifyActionToken(token, kind.purpose)
+	if err != nil {
+		return payload, err
+	}
+	if _, err := s.cfg.Store.ConsumeVerification(ctx, verificationIdentifier(kind.purpose, payload.Email), hashString(token), time.Now().UTC()); err != nil {
+		s.audit(ctx, AuditEvent{Type: kind.auditBase + ".failed", Email: payload.Email, Success: false, Error: ErrInvalidToken.Error()})
+		return payload, ErrInvalidToken
+	}
+	return payload, nil
 }
 
 func (s *Service) signActionToken(payload actionTokenPayload) (string, error) {

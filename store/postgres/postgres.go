@@ -53,6 +53,30 @@ values ($1, $2, $3, $4, $5, $6, $7)`,
 	return mapErr(err)
 }
 
+func (s *Store) CreateUserAccount(ctx context.Context, u *canopy.User, a *canopy.Account) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+insert into "user" (id, name, email, email_verified, image, created_at, updated_at)
+values ($1, $2, $3, $4, $5, $6, $7)`,
+		u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.CreatedAt, u.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+insert into account (
+	id, user_id, account_id, provider_id, access_token, refresh_token, access_token_expires_at,
+	refresh_token_expires_at, scope, id_token, password, created_at, updated_at
+) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		a.ID, a.UserID, a.AccountID, a.ProviderID, a.AccessToken, a.RefreshToken, a.AccessTokenExpiresAt,
+		a.RefreshTokenExpiresAt, a.Scope, a.IDToken, a.Password, a.CreatedAt, a.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	return tx.Commit()
+}
+
 func (s *Store) UpdateUser(ctx context.Context, u *canopy.User) error {
 	res, err := s.db.ExecContext(ctx, `
 update "user" set name=$2, email=$3, email_verified=$4, image=$5, updated_at=$6 where id=$1`,

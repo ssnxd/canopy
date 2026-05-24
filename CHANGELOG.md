@@ -6,6 +6,14 @@ Canopy follows semantic versioning after the first stable release. Until v1.0.0,
 
 ## [Unreleased]
 
+### Added
+
+- Build-tagged Postgres e2e tests for email/password and OAuth HTTP flows.
+
+### Fixed
+
+- Postgres-backed user/account provisioning now runs in one transaction when Canopy creates a new account.
+
 ### Planned
 
 - Transactional store APIs for atomic user/account/session creation.
