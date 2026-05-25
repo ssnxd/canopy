@@ -1,0 +1,16 @@
+# yaml-language-server: $schema=https://goreleaser.com/static/schema.json
+version: 2
+
+project_name: canopy
+
+builds:
+  - skip: true
+
+changelog:
+  use: github
+  sort: asc
+
+release:
+  github:
+    owner: ssnxd
+    name: canopy
