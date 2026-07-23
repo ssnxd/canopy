@@ -190,6 +190,42 @@ func TestResolveCallbackURL(t *testing.T) {
 	}
 }
 
+// A session must not authenticate an unverified user when the
+// application requires email verification. The same session must work
+// after the user verifies the email.
+func TestSessionGatedUntilEmailVerified(t *testing.T) {
+	sender := &testEmailSender{}
+	auth, err := New(Config{
+		Store:                    newMemoryStore(),
+		Secret:                   "dev-secret-with-enough-test-entropy",
+		RequireEmailVerification: true,
+		EmailSender:              sender,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	data, token, err := auth.API().SignUpEmail(ctx, SignUpEmailInput{Name: "Ada", Email: "ada@example.com", Password: "correct-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if data.User.EmailVerified {
+		t.Fatal("precondition: user should be unverified")
+	}
+	if _, err := auth.API().GetSession(ctx, token); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unverified session err = %v, want ErrUnauthorized", err)
+	}
+	if len(sender.verificationMessages) != 1 {
+		t.Fatalf("verification messages = %d, want 1", len(sender.verificationMessages))
+	}
+	if _, err := auth.API().VerifyEmail(ctx, VerifyEmailInput{Token: sender.verificationMessages[0].Token}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.API().GetSession(ctx, token); err != nil {
+		t.Fatalf("verified session err = %v, want nil (same token should now work)", err)
+	}
+}
+
 // An oversize request body must be rejected, not read into memory.
 func TestRequestBodyIsSizeLimited(t *testing.T) {
 	auth, err := New(Config{Store: newMemoryStore(), Secret: "dev-secret-with-enough-test-entropy"})

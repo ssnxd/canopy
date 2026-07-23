@@ -615,6 +615,12 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, e
 		_ = s.cfg.Store.DeleteSessionByToken(ctx, token)
 		return nil, ErrUnauthorized
 	}
+	// Do not treat an unverified user as authenticated when the
+	// application requires email verification. The same session works
+	// after the user verifies the email.
+	if s.cfg.RequireEmailVerification && !data.User.EmailVerified {
+		return nil, ErrUnauthorized
+	}
 	if s.cfg.Session.UpdateAge > 0 && now.Sub(data.Session.UpdatedAt) >= s.cfg.Session.UpdateAge {
 		data.Session.ExpiresAt = now.Add(s.cfg.Session.Expiry)
 		data.Session.UpdatedAt = now

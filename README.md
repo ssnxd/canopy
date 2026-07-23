@@ -247,6 +247,8 @@ Also sets the `canopy.session_token` cookie.
 
 When `RequireEmailVerification` is enabled, sign-up creates the user with `emailVerified=false`, creates a one-time verification token, and calls `EmailSender.SendEmailVerification`. Email/password sign-in returns `UNVERIFIED_EMAIL` until the token is verified.
 
+Sign-up still sets a session cookie, but the session is inactive until the user verifies the email. `GetSession` and the middleware return unauthorized for an unverified user. The same session becomes active after verification, so the user does not sign in again.
+
 ### `POST /auth/send-verification-email`
 
 Creates a fresh one-time email verification token and sends it through `EmailSender`.
