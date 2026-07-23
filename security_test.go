@@ -133,6 +133,40 @@ func TestPasswordResetKeepsTrustedCallbackURL(t *testing.T) {
 	}
 }
 
+func TestCheckOriginSecFetch(t *testing.T) {
+	trusted := Config{TrustedOrigins: []string{"https://app.example.com"}}
+	empty := Config{}
+	newReq := func(method string, headers map[string]string) *http.Request {
+		r := httptest.NewRequest(method, "/sign-in/email", nil)
+		for k, v := range headers {
+			r.Header.Set(k, v)
+		}
+		return r
+	}
+	cases := []struct {
+		name    string
+		cfg     Config
+		method  string
+		headers map[string]string
+		want    bool
+	}{
+		{"GET is always allowed", trusted, http.MethodGet, nil, true},
+		{"no origin no sec-fetch allows api client", trusted, http.MethodPost, nil, true},
+		{"trusted origin allowed", trusted, http.MethodPost, map[string]string{"Origin": "https://app.example.com"}, true},
+		{"untrusted origin rejected", trusted, http.MethodPost, map[string]string{"Origin": "https://evil.example"}, false},
+		{"cross-site rejected without origin", trusted, http.MethodPost, map[string]string{"Sec-Fetch-Site": "cross-site"}, false},
+		{"cross-site untrusted origin rejected", trusted, http.MethodPost, map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://evil.example"}, false},
+		{"cross-site trusted origin allowed", trusted, http.MethodPost, map[string]string{"Sec-Fetch-Site": "cross-site", "Origin": "https://app.example.com"}, true},
+		{"same-origin allowed with empty trusted origins", empty, http.MethodPost, map[string]string{"Sec-Fetch-Site": "same-origin", "Origin": "https://self.example"}, true},
+		{"disabled check allows all", Config{DisableOriginCheck: true}, http.MethodPost, map[string]string{"Origin": "https://evil.example"}, true},
+	}
+	for _, c := range cases {
+		if got := c.cfg.CheckOrigin(newReq(c.method, c.headers)); got != c.want {
+			t.Errorf("%s: CheckOrigin = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
 func TestResolveCallbackURL(t *testing.T) {
 	cfg := Config{TrustedOrigins: []string{"https://app.example.com"}}
 	cases := []struct {

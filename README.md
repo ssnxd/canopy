@@ -881,6 +881,7 @@ Use `errors.Is(err, canopy.ErrInvalidCredentials)` rather than comparing error s
 - Fresh session token after every successful authentication.
 - HttpOnly session cookies.
 - SameSite=Lax by default.
+- Cross-origin request checks use the Origin header and Sec-Fetch metadata.
 - Secure cookies in production.
 - Production secret length validation.
 - Conservative email normalization.

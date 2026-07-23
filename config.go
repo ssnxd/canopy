@@ -194,6 +194,16 @@ func (c Config) CheckOrigin(r *http.Request) bool {
 		return true
 	}
 	origin := r.Header.Get("Origin")
+	// Sec-Fetch-Site is set by the browser and script cannot change it.
+	// Use it first, because it is the most reliable signal.
+	switch r.Header.Get("Sec-Fetch-Site") {
+	case "same-origin", "none":
+		return true
+	case "cross-site", "same-site":
+		return origin != "" && c.isTrustedOrigin(origin)
+	}
+	// No Sec-Fetch metadata. Fall back to the Origin header.
+	// A missing Origin is a non-browser client, so allow it.
 	if origin == "" {
 		return true
 	}
