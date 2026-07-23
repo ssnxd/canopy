@@ -262,7 +262,12 @@ func (h *httpHandler) clearOAuthStateCookie(w http.ResponseWriter) {
 	})
 }
 
+// maxRequestBodyBytes limits the size of a request body that Canopy decodes.
+// This stops a large body from exhausting server memory.
+const maxRequestBodyBytes = 1 << 20 // 1 MiB
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()

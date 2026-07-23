@@ -1,8 +1,11 @@
 package canopy
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync"
 	"testing"
@@ -150,6 +153,25 @@ func TestResolveCallbackURL(t *testing.T) {
 		if got := cfg.resolveCallbackURL(c.in); got != c.want {
 			t.Errorf("resolveCallbackURL(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// An oversize request body must be rejected, not read into memory.
+func TestRequestBodyIsSizeLimited(t *testing.T) {
+	auth, err := New(Config{Store: newMemoryStore(), Secret: "dev-secret-with-enough-test-entropy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := auth.Handler()
+
+	filler := strings.Repeat("a", (1<<20)+1024) // just over 1 MiB
+	body := []byte(`{"name":"` + filler + `","email":"a@b.com","password":"correct-password"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-up/email", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversize body status = %d, want 400", rec.Code)
 	}
 }
 
