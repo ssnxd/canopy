@@ -51,7 +51,7 @@ func TestEmailVerificationFlow(t *testing.T) {
 	if msg.Token == "" || msg.URL == "" || !msg.ExpiresAt.After(time.Now()) {
 		t.Fatalf("invalid verification message: %#v", msg)
 	}
-	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{
+	_, err = auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "correct-password",
 	})
@@ -69,7 +69,7 @@ func TestEmailVerificationFlow(t *testing.T) {
 	if !errors.Is(err, ErrInvalidToken) {
 		t.Fatalf("replay err = %v, want ErrInvalidToken", err)
 	}
-	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{
+	_, err = auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "correct-password",
 	})
@@ -152,14 +152,14 @@ func TestPasswordResetFlowRevokesSessionsAndChangesPassword(t *testing.T) {
 	if _, err := auth.API().GetSession(ctx, oldToken); !errors.Is(err, ErrUnauthorized) {
 		t.Fatalf("old session err = %v, want ErrUnauthorized", err)
 	}
-	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{
+	_, err = auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "old-password",
 	})
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("old password err = %v, want ErrInvalidCredentials", err)
 	}
-	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{
+	_, err = auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "new-password",
 	})

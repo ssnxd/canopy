@@ -60,7 +60,7 @@ func TestSignInVerifiesEvenForUnknownUser(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := hasher.count()
-	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{Email: "ghost@example.com", Password: "any-password"})
+	_, err = auth.API().SignInEmail(ctx, SignInEmailInput{Email: "ghost@example.com", Password: "any-password"})
 	if !errors.Is(err, ErrInvalidCredentials) {
 		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
 	}
@@ -296,7 +296,7 @@ func TestOAuthDropsUntrustedRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, callbackURL, _, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+	out, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
 		Provider:     "google",
 		Code:         "auth-code",
 		State:        stateFromURL(t, start.URL),
@@ -305,7 +305,7 @@ func TestOAuthDropsUntrustedRedirect(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if callbackURL != "" {
-		t.Fatalf("untrusted OAuth redirect was kept: %q", callbackURL)
+	if out.CallbackURL != "" {
+		t.Fatalf("untrusted OAuth redirect was kept: %q", out.CallbackURL)
 	}
 }

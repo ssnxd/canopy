@@ -498,10 +498,15 @@ data, token, err := auth.API().SignUpEmail(ctx, canopy.SignUpEmailInput{
 ```
 
 ```go
-data, token, err := auth.API().SignInEmail(ctx, canopy.SignInEmailInput{
+result, err := auth.API().SignInEmail(ctx, canopy.SignInEmailInput{
 	Email:    "ada@example.com",
 	Password: "correct-password",
 })
+// result.Session and result.Token hold the new session on success.
+// result.Challenge is set when a second factor is required.
+if result.TwoFactorRequired() {
+	// Prompt for the second factor with result.Challenge.
+}
 ```
 
 ### Email Verification
@@ -547,7 +552,7 @@ start, stateCookieValue, err := auth.API().SignInSocial(ctx, canopy.SignInSocial
 `start.URL` is the provider authorization URL. `stateCookieValue` is the value that must be placed in the OAuth state binding cookie when using the service API directly.
 
 ```go
-data, sessionToken, callbackURL, rememberMe, err := auth.API().OAuthCallback(ctx, canopy.OAuthCallbackInput{
+out, err := auth.API().OAuthCallback(ctx, canopy.OAuthCallbackInput{
 	Provider:     "google",
 	Code:         code,
 	State:        state,
@@ -555,6 +560,8 @@ data, sessionToken, callbackURL, rememberMe, err := auth.API().OAuthCallback(ctx
 	IPAddress:    ip,
 	UserAgent:    userAgent,
 })
+// out.Result holds the sign-in result (session or challenge).
+// out.CallbackURL and out.RememberMe drive the browser redirect and cookie.
 ```
 
 ### Sessions
@@ -753,6 +760,26 @@ type Hooks struct {
 
 Hooks are app-level callbacks. Audit logging is separate and should be used for security telemetry.
 
+## Modules
+
+A module is an optional feature that plugs into the handler and the service. The built-in features use this seam. A third-party plugin uses the same seam. Add a module through `Config.Modules`.
+
+```go
+type Module interface {
+	ID() string
+	Init(core canopy.Core) error
+}
+```
+
+A module can also implement optional capabilities:
+
+- `RouteModule` mounts HTTP routes under the handler.
+- `SignInInterceptor` pauses session creation after primary authentication. The two-factor module uses this to require a second step.
+
+`Core` is the narrow facade that a module depends on. It gives access to the store, the config, session creation, request authentication, and audit logging. A module reads an optional store capability with a type assertion, and it fails fast in `Init` when the store does not support it.
+
+The built-in two-factor, organization, and admin features are modules. They ship in later releases.
+
 ## Store Interface
 
 Applications can implement custom storage by satisfying `canopy.Store`.
@@ -794,27 +821,35 @@ type User struct {
 	Email         string
 	EmailVerified bool
 	Image         string
+	Role          string
+	Banned        bool
+	BanReason     string
+	BanExpiresAt  *time.Time
 	CreatedAt     time.Time
 	UpdatedAt     time.Time
 }
 ```
 
+`Role`, `Banned`, `BanReason`, and `BanExpiresAt` support the admin module. A banned user is not authenticated. A ban with an expiry in the past is not active.
+
 ### Session
 
 ```go
 type Session struct {
-	ID        string
-	UserID    string
-	Token     string
-	ExpiresAt time.Time
-	IPAddress string
-	UserAgent string
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	ID                   string
+	UserID               string
+	Token                string
+	ExpiresAt            time.Time
+	IPAddress            string
+	UserAgent            string
+	ActiveOrganizationID string
+	ImpersonatedBy       string
+	CreatedAt            time.Time
+	UpdatedAt            time.Time
 }
 ```
 
-`Token` is intentionally omitted from JSON responses.
+`Token` is intentionally omitted from JSON responses. `ActiveOrganizationID` holds the active organization for the session. `ImpersonatedBy` records the admin user during impersonation.
 
 ### Account
 
@@ -873,6 +908,12 @@ Canopy exposes typed sentinel errors:
 - `ErrConflict`
 - `ErrInvalidInput`
 - `ErrUnauthorized`
+- `ErrForbidden`
+- `ErrUserBanned`
+- `ErrInvalidTwoFactorCode`
+- `ErrOrganizationNotFound`
+- `ErrNotOrganizationMember`
+- `ErrInvitationInvalid`
 
 Use `errors.Is(err, canopy.ErrInvalidCredentials)` rather than comparing error strings.
 

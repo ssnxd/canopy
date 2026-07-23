@@ -93,22 +93,36 @@ type ResetPasswordInput struct {
 	NewPassword string
 }
 
+// SignInResult is the outcome of a sign-in attempt. Exactly one of
+// Session or Challenge is set. Session is set on a full sign-in.
+// Challenge is set when a second authentication step is required.
+type SignInResult struct {
+	Session   *SessionData
+	Token     string
+	Challenge *StepUpChallenge
+}
+
+// TwoFactorRequired reports if the sign-in needs a second step.
+func (r SignInResult) TwoFactorRequired() bool { return r.Challenge != nil }
+
+// OAuthCallbackResult is the outcome of an OAuth callback. It carries the
+// sign-in result and the redirect data for the browser flow.
+type OAuthCallbackResult struct {
+	Result      *SignInResult
+	CallbackURL string
+	RememberMe  *bool
+}
+
 type Service struct {
-	cfg       Config
-	providers map[string]oauth.Provider
-	dummyOnce sync.Once
-	dummyHash string
+	cfg          Config
+	providers    map[string]oauth.Provider
+	interceptors []SignInInterceptor
+	dummyOnce    sync.Once
+	dummyHash    string
 }
 
 type userAccountStore interface {
 	CreateUserAccount(ctx context.Context, user *User, account *Account) error
-}
-
-type oauthCallbackResult struct {
-	Data        *SessionData
-	Token       string
-	CallbackURL string
-	RememberMe  *bool
 }
 
 type actionTokenKind struct {
@@ -122,7 +136,30 @@ func newService(cfg Config) *Service {
 	for _, provider := range cfg.Providers {
 		providers[provider.ID()] = provider
 	}
-	return &Service{cfg: cfg, providers: providers}
+	s := &Service{cfg: cfg, providers: providers}
+	for _, module := range cfg.Modules {
+		if interceptor, ok := module.(SignInInterceptor); ok {
+			s.interceptors = append(s.interceptors, interceptor)
+		}
+	}
+	return s
+}
+
+// Store returns the configured store. It satisfies the Core interface.
+func (s *Service) Store() Store { return s.cfg.Store }
+
+// Config returns the configuration. It satisfies the Core interface.
+func (s *Service) Config() Config { return s.cfg }
+
+// Authenticate resolves the session for a request. It reads the bearer
+// token or the session cookie. It satisfies the Core interface.
+func (s *Service) Authenticate(r *http.Request) (*SessionData, error) {
+	return s.GetSession(r.Context(), requestToken(r, s.cfg.Session.CookieName))
+}
+
+// Audit emits an audit event. It satisfies the Core interface.
+func (s *Service) Audit(ctx context.Context, event AuditEvent) {
+	s.audit(ctx, event)
 }
 
 func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*SessionData, string, error) {
@@ -192,7 +229,7 @@ func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*Sessio
 			return nil, "", err
 		}
 	}
-	return s.createSession(ctx, *user, in.RememberMe, in.IPAddress, in.UserAgent)
+	return s.IssueSession(ctx, *user, SessionOptions{RememberMe: in.RememberMe, IPAddress: in.IPAddress, UserAgent: in.UserAgent})
 }
 
 func (s *Service) SendEmailVerification(ctx context.Context, in SendEmailVerificationInput) error {
@@ -379,15 +416,11 @@ func (s *Service) SignInSocial(ctx context.Context, in SignInSocialInput) (*Sign
 	return &SignInSocialOutput{URL: url}, binding, nil
 }
 
-func (s *Service) OAuthCallback(ctx context.Context, in OAuthCallbackInput) (*SessionData, string, string, *bool, error) {
-	out, err := s.oauthCallback(ctx, in)
-	if err != nil {
-		return nil, "", "", nil, err
-	}
-	return out.Data, out.Token, out.CallbackURL, out.RememberMe, nil
+func (s *Service) OAuthCallback(ctx context.Context, in OAuthCallbackInput) (*OAuthCallbackResult, error) {
+	return s.oauthCallback(ctx, in)
 }
 
-func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*oauthCallbackResult, error) {
+func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*OAuthCallbackResult, error) {
 	provider, ok := s.providers[in.Provider]
 	if !ok {
 		return nil, ErrProviderFailure
@@ -411,20 +444,23 @@ func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*oa
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
 		return nil, ErrProviderFailure
 	}
-	data, sessionToken, err := s.signInOAuthProfile(ctx, provider.ID(), profile, payload.RememberMe, in.IPAddress, in.UserAgent)
+	result, err := s.signInOAuthProfile(ctx, provider.ID(), profile, payload.RememberMe, in.IPAddress, in.UserAgent)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.failed", ProviderID: in.Provider, Email: normalizeEmail(profile.Email), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
 		return nil, err
 	}
-	if s.cfg.Hooks.AfterOAuth != nil {
-		if err := s.cfg.Hooks.AfterOAuth(*data); err != nil {
-			return nil, err
+	if result.Session != nil {
+		if s.cfg.Hooks.AfterOAuth != nil {
+			if err := s.cfg.Hooks.AfterOAuth(*result.Session); err != nil {
+				return nil, err
+			}
 		}
+		s.audit(ctx, AuditEvent{Type: "oauth.callback.succeeded", UserID: result.Session.User.ID, Email: result.Session.User.Email, ProviderID: provider.ID(), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
+	} else {
+		s.audit(ctx, AuditEvent{Type: "oauth.callback.two_factor_required", ProviderID: provider.ID(), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
 	}
-	s.audit(ctx, AuditEvent{Type: "oauth.callback.succeeded", UserID: data.User.ID, Email: data.User.Email, ProviderID: provider.ID(), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
-	return &oauthCallbackResult{
-		Data:        data,
-		Token:       sessionToken,
+	return &OAuthCallbackResult{
+		Result:      result,
 		CallbackURL: payload.CallbackURL,
 		RememberMe:  payload.RememberMe,
 	}, nil
@@ -485,40 +521,41 @@ func (s *Service) RefreshProviderToken(ctx context.Context, in RefreshProviderTo
 	}, nil
 }
 
-func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, profile *oauth.Profile, rememberMe *bool, ip, ua string) (*SessionData, string, error) {
+func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, profile *oauth.Profile, rememberMe *bool, ip, ua string) (*SignInResult, error) {
+	opt := SessionOptions{RememberMe: rememberMe, IPAddress: ip, UserAgent: ua}
 	if profile == nil || profile.AccountID == "" {
-		return nil, "", ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	if profile.ProviderID != "" && profile.ProviderID != providerID {
-		return nil, "", ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	account, err := s.cfg.Store.FindAccount(ctx, providerID, profile.AccountID)
 	if err == nil {
 		user, err := s.cfg.Store.FindUserByID(ctx, account.UserID)
 		if err != nil {
-			return nil, "", err
+			return nil, err
 		}
 		updateAccountFromProfile(account, profile)
 		account.UpdatedAt = time.Now().UTC()
 		_ = s.cfg.Store.UpdateAccount(ctx, account)
-		return s.createSession(ctx, *user, rememberMe, ip, ua)
+		return s.finishSignIn(ctx, *user, opt)
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, "", err
+		return nil, err
 	}
 	email := normalizeEmail(profile.Email)
 	if email == "" {
-		return nil, "", ErrProviderFailure
+		return nil, ErrProviderFailure
 	}
 	if existing, err := s.cfg.Store.FindUserByEmail(ctx, email); err == nil && existing != nil {
-		return nil, "", ErrAccountLinking
+		return nil, ErrAccountLinking
 	} else if err != nil && !errors.Is(err, ErrNotFound) {
-		return nil, "", err
+		return nil, err
 	}
 	now := time.Now().UTC()
 	userID, err := newID("usr")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	user := &User{
 		ID:            userID,
@@ -534,12 +571,12 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 	}
 	if s.cfg.Hooks.BeforeUserCreate != nil {
 		if err := s.cfg.Hooks.BeforeUserCreate(user); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
 	accountID, err := newID("acc")
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	account = &Account{
 		ID:         accountID,
@@ -551,17 +588,17 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 	}
 	updateAccountFromProfile(account, profile)
 	if err := s.createUserAccount(ctx, user, account); err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	if s.cfg.Hooks.AfterUserCreate != nil {
 		if err := s.cfg.Hooks.AfterUserCreate(*user); err != nil {
-			return nil, "", err
+			return nil, err
 		}
 	}
-	return s.createSession(ctx, *user, rememberMe, ip, ua)
+	return s.finishSignIn(ctx, *user, opt)
 }
 
-func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SessionData, string, error) {
+func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SignInResult, error) {
 	email := normalizeEmail(in.Email)
 	user, userErr := s.cfg.Store.FindUserByEmail(ctx, email)
 	var account *Account
@@ -582,11 +619,11 @@ func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*Sessio
 			auditUserID = user.ID
 		}
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: auditUserID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
-		return nil, "", ErrInvalidCredentials
+		return nil, ErrInvalidCredentials
 	}
 	if s.cfg.RequireEmailVerification && !user.EmailVerified {
 		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrUnverifiedEmail.Error()})
-		return nil, "", ErrUnverifiedEmail
+		return nil, ErrUnverifiedEmail
 	}
 	if needsRehash {
 		if hash, hashErr := s.cfg.PasswordHasher.Hash(ctx, in.Password); hashErr == nil {
@@ -595,11 +632,17 @@ func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*Sessio
 			_ = s.cfg.Store.UpdateAccount(ctx, account)
 		}
 	}
-	data, token, err := s.createSession(ctx, *user, in.RememberMe, in.IPAddress, in.UserAgent)
-	if err == nil {
-		s.audit(ctx, AuditEvent{Type: "sign_in.email.succeeded", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
+	result, err := s.finishSignIn(ctx, *user, SessionOptions{RememberMe: in.RememberMe, IPAddress: in.IPAddress, UserAgent: in.UserAgent})
+	if err != nil {
+		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: err.Error()})
+		return nil, err
 	}
-	return data, token, err
+	if result.Session != nil {
+		s.audit(ctx, AuditEvent{Type: "sign_in.email.succeeded", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
+	} else {
+		s.audit(ctx, AuditEvent{Type: "sign_in.email.two_factor_required", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
+	}
+	return result, nil
 }
 
 func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, error) {
@@ -626,6 +669,11 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, e
 			_ = s.cfg.Store.DeleteSessionByToken(ctx, token)
 			return nil, ErrUnauthorized
 		}
+	}
+	// A banned user is not authenticated. Keep the session, because the
+	// ban may expire.
+	if isBanned(data.User, now) {
+		return nil, ErrUserBanned
 	}
 	// Do not treat an unverified user as authenticated when the
 	// application requires email verification. The same session works
@@ -687,7 +735,32 @@ func SessionFromContext(ctx context.Context) (*SessionData, bool) {
 	return data, ok && data != nil
 }
 
-func (s *Service) createSession(ctx context.Context, user User, rememberMe *bool, ip, ua string) (*SessionData, string, error) {
+// finishSignIn runs the sign-in interceptors and then issues a session.
+// It rejects a banned user. It returns a challenge when a module requires
+// a second authentication step.
+func (s *Service) finishSignIn(ctx context.Context, user User, opt SessionOptions) (*SignInResult, error) {
+	if isBanned(user, time.Now().UTC()) {
+		return nil, ErrUserBanned
+	}
+	for _, interceptor := range s.interceptors {
+		challenge, err := interceptor.AfterPrimaryAuth(ctx, user)
+		if err != nil {
+			return nil, err
+		}
+		if challenge != nil {
+			return &SignInResult{Challenge: challenge}, nil
+		}
+	}
+	data, token, err := s.IssueSession(ctx, user, opt)
+	if err != nil {
+		return nil, err
+	}
+	return &SignInResult{Session: data, Token: token}, nil
+}
+
+// IssueSession creates a session for the user and returns the token.
+// It satisfies the Core interface, so a module can complete a sign-in.
+func (s *Service) IssueSession(ctx context.Context, user User, opt SessionOptions) (*SessionData, string, error) {
 	now := time.Now().UTC()
 	token, err := randomToken(32)
 	if err != nil {
@@ -698,16 +771,18 @@ func (s *Service) createSession(ctx context.Context, user User, rememberMe *bool
 		return nil, "", err
 	}
 	session := &Session{
-		ID:        id,
-		UserID:    user.ID,
-		Token:     token,
-		ExpiresAt: now.Add(s.cfg.Session.Expiry),
-		IPAddress: ip,
-		UserAgent: ua,
-		CreatedAt: now,
-		UpdatedAt: now,
+		ID:                   id,
+		UserID:               user.ID,
+		Token:                token,
+		ExpiresAt:            now.Add(s.cfg.Session.Expiry),
+		IPAddress:            opt.IPAddress,
+		UserAgent:            opt.UserAgent,
+		ActiveOrganizationID: opt.ActiveOrganizationID,
+		ImpersonatedBy:       opt.ImpersonatedBy,
+		CreatedAt:            now,
+		UpdatedAt:            now,
 	}
-	if rememberMe != nil && !*rememberMe {
+	if opt.RememberMe != nil && !*opt.RememberMe {
 		session.ExpiresAt = now.Add(s.cfg.Session.BrowserSessionMaxAge)
 	}
 	if err := s.cfg.Store.CreateSession(ctx, session); err != nil {
@@ -720,6 +795,18 @@ func (s *Service) createSession(ctx context.Context, user User, rememberMe *bool
 		}
 	}
 	return data, token, nil
+}
+
+// isBanned reports if the user is banned at time now. A ban with an
+// expiry in the past is not active.
+func isBanned(u User, now time.Time) bool {
+	if !u.Banned {
+		return false
+	}
+	if u.BanExpiresAt != nil && !u.BanExpiresAt.After(now) {
+		return false
+	}
+	return true
 }
 
 // passwordEqualizerHash returns a stable decoy hash. A sign-in for a

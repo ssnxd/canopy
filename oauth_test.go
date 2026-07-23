@@ -113,7 +113,7 @@ func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	data, _, _, _, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+	out, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
 		Provider:     "google",
 		Code:         "auth-code",
 		State:        stateFromURL(t, start.URL),
@@ -122,6 +122,7 @@ func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	data := out.Result.Session
 	refreshed, err := auth.API().RefreshProviderToken(ctx, RefreshProviderTokenInput{
 		UserID:     data.User.ID,
 		ProviderID: "google",
@@ -188,7 +189,7 @@ func TestOAuthFlowCreatesSessionAndRejectsReplay(t *testing.T) {
 		t.Fatal(err)
 	}
 	state := stateFromURL(t, start.URL)
-	data, token, _, _, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+	out, err := auth.API().OAuthCallback(ctx, OAuthCallbackInput{
 		Provider:     "google",
 		Code:         "auth-code",
 		State:        state,
@@ -197,13 +198,15 @@ func TestOAuthFlowCreatesSessionAndRejectsReplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	data := out.Result.Session
+	token := out.Result.Token
 	if token == "" || data.User.Email != "oauth@example.com" {
 		t.Fatalf("unexpected oauth session: token=%q data=%#v", token, data)
 	}
 	if provider.lastVerifier == "" {
 		t.Fatal("PKCE verifier was not passed to provider exchange")
 	}
-	_, _, _, _, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+	_, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
 		Provider:     "google",
 		Code:         "auth-code",
 		State:        state,
@@ -289,7 +292,7 @@ func TestOAuthRejectsSameEmailAccountLinking(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, _, _, _, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
+	_, err = auth.API().OAuthCallback(ctx, OAuthCallbackInput{
 		Provider:     "google",
 		Code:         "auth-code",
 		State:        stateFromURL(t, start.URL),

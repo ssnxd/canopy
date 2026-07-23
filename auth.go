@@ -1,6 +1,9 @@
 package canopy
 
-import "net/http"
+import (
+	"fmt"
+	"net/http"
+)
 
 type Auth struct {
 	cfg Config
@@ -14,6 +17,11 @@ func New(config Config) (*Auth, error) {
 	}
 	a := &Auth{cfg: config}
 	a.api = newService(config)
+	for _, module := range config.Modules {
+		if err := module.Init(a.api); err != nil {
+			return nil, fmt.Errorf("canopy: module %q: %w", module.ID(), err)
+		}
+	}
 	return a, nil
 }
 

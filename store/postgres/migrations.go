@@ -57,4 +57,12 @@ create table if not exists verification (
 
 create unique index if not exists verification_identifier_value_unique on verification (identifier, value);
 create index if not exists verification_expires_at_idx on verification (expires_at);
+
+alter table "user" add column if not exists role text not null default '';
+alter table "user" add column if not exists banned boolean not null default false;
+alter table "user" add column if not exists ban_reason text not null default '';
+alter table "user" add column if not exists ban_expires_at timestamptz;
+
+alter table session add column if not exists active_organization_id text not null default '';
+alter table session add column if not exists impersonated_by text not null default '';
 `

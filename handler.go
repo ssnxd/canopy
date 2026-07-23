@@ -35,7 +35,48 @@ func newHandler(api *Service, cfg Config) http.Handler {
 	h.mux.HandleFunc("POST /sign-out", h.signOut)
 	h.mux.HandleFunc("GET /get-session", h.getSession)
 	h.mux.HandleFunc("POST /get-session", h.getSession)
+	h.mountModules()
 	return h
+}
+
+// mountModules registers the routes that each RouteModule contributes.
+// It wraps a route with a session check when the route requires one.
+func (h *httpHandler) mountModules() {
+	for _, module := range h.cfg.Modules {
+		routeModule, ok := module.(RouteModule)
+		if !ok {
+			continue
+		}
+		for _, route := range routeModule.Routes() {
+			handler := route.Handler
+			if route.RequireSession {
+				handler = h.requireSession(handler)
+			}
+			h.mux.Handle(route.Method+" "+route.Pattern, handler)
+		}
+	}
+}
+
+// requireSession resolves the session before it runs next. It returns
+// unauthorized when no session is present. The session is available
+// through SessionFromContext.
+func (h *httpHandler) requireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, err := h.api.Authenticate(r)
+		if err != nil {
+			writeError(w, ErrUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), data)))
+	})
+}
+
+func twoFactorResponse(challenge *StepUpChallenge) map[string]any {
+	return map[string]any{
+		"twoFactorRequired": true,
+		"token":             challenge.Token,
+		"methods":           challenge.Methods,
+	}
 }
 
 func (h *httpHandler) sendVerificationEmail(w http.ResponseWriter, r *http.Request) {
@@ -133,12 +174,16 @@ func (h *httpHandler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	h.clearOAuthStateCookie(w)
-	h.cfg.Session.SetCookie(w, out.Token, out.RememberMe)
+	if out.Result.Challenge != nil {
+		writeJSON(w, http.StatusOK, twoFactorResponse(out.Result.Challenge))
+		return
+	}
+	h.cfg.Session.SetCookie(w, out.Result.Token, out.RememberMe)
 	if out.CallbackURL != "" {
 		http.Redirect(w, r, out.CallbackURL, http.StatusFound)
 		return
 	}
-	writeJSON(w, http.StatusOK, out.Data)
+	writeJSON(w, http.StatusOK, out.Result.Session)
 }
 
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -172,13 +217,17 @@ func (h *httpHandler) signInEmail(w http.ResponseWriter, r *http.Request) {
 	}
 	req.IPAddress = requestIP(r)
 	req.UserAgent = r.UserAgent()
-	data, token, err := h.api.SignInEmail(r.Context(), req)
+	result, err := h.api.SignInEmail(r.Context(), req)
 	if err != nil {
 		writeError(w, err)
 		return
 	}
-	h.cfg.Session.SetCookie(w, token, req.RememberMe)
-	writeJSON(w, http.StatusOK, data)
+	if result.Challenge != nil {
+		writeJSON(w, http.StatusOK, twoFactorResponse(result.Challenge))
+		return
+	}
+	h.cfg.Session.SetCookie(w, result.Token, req.RememberMe)
+	writeJSON(w, http.StatusOK, result.Session)
 }
 
 func (h *httpHandler) signOut(w http.ResponseWriter, r *http.Request) {
@@ -213,7 +262,7 @@ func (h *httpHandler) sessionFromRequest(r *http.Request) (*requestSession, erro
 	return &requestSession{Data: data, Token: token}, nil
 }
 
-func (h *httpHandler) finishOAuthBrowserFlow(r *http.Request) (*oauthCallbackResult, error) {
+func (h *httpHandler) finishOAuthBrowserFlow(r *http.Request) (*OAuthCallbackResult, error) {
 	provider := r.PathValue("provider")
 	state := r.FormValue("state")
 	code := r.FormValue("code")
@@ -331,6 +380,18 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusBadGateway, "PROVIDER_TOKEN_REFRESH_FAILED", "Provider token refresh failed"
 	case errors.Is(err, ErrProviderFailure):
 		status, code, message = http.StatusBadGateway, "PROVIDER_FAILURE", "Provider request failed"
+	case errors.Is(err, ErrUserBanned):
+		status, code, message = http.StatusForbidden, "USER_BANNED", "User is banned"
+	case errors.Is(err, ErrForbidden):
+		status, code, message = http.StatusForbidden, "FORBIDDEN", "Forbidden"
+	case errors.Is(err, ErrInvalidTwoFactorCode):
+		status, code, message = http.StatusUnauthorized, "INVALID_TWO_FACTOR_CODE", "Invalid two-factor code"
+	case errors.Is(err, ErrOrganizationNotFound):
+		status, code, message = http.StatusNotFound, "ORGANIZATION_NOT_FOUND", "Organization was not found"
+	case errors.Is(err, ErrNotOrganizationMember):
+		status, code, message = http.StatusForbidden, "NOT_ORGANIZATION_MEMBER", "Not a member of the organization"
+	case errors.Is(err, ErrInvitationInvalid):
+		status, code, message = http.StatusBadRequest, "INVITATION_INVALID", "Invitation is invalid"
 	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]string{

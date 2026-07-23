@@ -113,6 +113,8 @@ type Config struct {
 	EmailVerificationTTL     time.Duration
 	PasswordResetTTL         time.Duration
 
+	Modules []Module
+
 	Session sessions.Config
 	Hooks   Hooks
 }
@@ -185,6 +187,16 @@ func (c Config) validate() error {
 			return fmt.Errorf("canopy: duplicate oauth provider %q", provider.ID())
 		}
 		seen[provider.ID()] = true
+	}
+	moduleSeen := map[string]bool{}
+	for _, module := range c.Modules {
+		if module == nil || module.ID() == "" {
+			return fmt.Errorf("canopy: module id is required")
+		}
+		if moduleSeen[module.ID()] {
+			return fmt.Errorf("canopy: duplicate module %q", module.ID())
+		}
+		moduleSeen[module.ID()] = true
 	}
 	return nil
 }

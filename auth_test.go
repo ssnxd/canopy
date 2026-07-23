@@ -44,14 +44,14 @@ func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	if signup.User.Email != "ada@example.com" {
 		t.Fatalf("email was not conservatively normalized: %q", signup.User.Email)
 	}
-	_, secondToken, err := auth.API().SignInEmail(ctx, SignInEmailInput{
+	signin, err := auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "correct-password",
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if firstToken == secondToken {
+	if firstToken == signin.Token {
 		t.Fatal("sign-in reused an existing session token")
 	}
 	if len(audit.events) == 0 || audit.events[len(audit.events)-1].Type != "sign_in.email.succeeded" {

@@ -23,33 +23,36 @@ func (s *Store) Migrate(ctx context.Context) error {
 	return err
 }
 
-func (s *Store) FindUserByID(ctx context.Context, id string) (*canopy.User, error) {
-	row := s.db.QueryRowContext(ctx, `
-select id, name, email, email_verified, image, created_at, updated_at
-from "user" where id = $1`, id)
+const userColumns = `id, name, email, email_verified, image, role, banned, ban_reason, ban_expires_at, created_at, updated_at`
+
+func scanUser(row scanner) (*canopy.User, error) {
 	var u canopy.User
-	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.EmailVerified, &u.Image, &u.CreatedAt, &u.UpdatedAt); err != nil {
+	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.EmailVerified, &u.Image, &u.Role, &u.Banned, &u.BanReason, &u.BanExpiresAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
 		return nil, mapErr(err)
 	}
 	return &u, nil
+}
+
+func (s *Store) FindUserByID(ctx context.Context, id string) (*canopy.User, error) {
+	row := s.db.QueryRowContext(ctx, `select `+userColumns+` from "user" where id = $1`, id)
+	return scanUser(row)
 }
 
 func (s *Store) FindUserByEmail(ctx context.Context, email string) (*canopy.User, error) {
-	row := s.db.QueryRowContext(ctx, `
-select id, name, email, email_verified, image, created_at, updated_at
-from "user" where lower(email) = lower($1)`, email)
-	var u canopy.User
-	if err := row.Scan(&u.ID, &u.Name, &u.Email, &u.EmailVerified, &u.Image, &u.CreatedAt, &u.UpdatedAt); err != nil {
-		return nil, mapErr(err)
-	}
-	return &u, nil
+	row := s.db.QueryRowContext(ctx, `select `+userColumns+` from "user" where lower(email) = lower($1)`, email)
+	return scanUser(row)
+}
+
+const userInsert = `
+insert into "user" (id, name, email, email_verified, image, role, banned, ban_reason, ban_expires_at, created_at, updated_at)
+values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`
+
+func userInsertArgs(u *canopy.User) []any {
+	return []any{u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.Role, u.Banned, u.BanReason, u.BanExpiresAt, u.CreatedAt, u.UpdatedAt}
 }
 
 func (s *Store) CreateUser(ctx context.Context, u *canopy.User) error {
-	_, err := s.db.ExecContext(ctx, `
-insert into "user" (id, name, email, email_verified, image, created_at, updated_at)
-values ($1, $2, $3, $4, $5, $6, $7)`,
-		u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.CreatedAt, u.UpdatedAt)
+	_, err := s.db.ExecContext(ctx, userInsert, userInsertArgs(u)...)
 	return mapErr(err)
 }
 
@@ -59,10 +62,7 @@ func (s *Store) CreateUserAccount(ctx context.Context, u *canopy.User, a *canopy
 		return err
 	}
 	defer tx.Rollback()
-	if _, err := tx.ExecContext(ctx, `
-insert into "user" (id, name, email, email_verified, image, created_at, updated_at)
-values ($1, $2, $3, $4, $5, $6, $7)`,
-		u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.CreatedAt, u.UpdatedAt); err != nil {
+	if _, err := tx.ExecContext(ctx, userInsert, userInsertArgs(u)...); err != nil {
 		return mapErr(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
@@ -79,8 +79,8 @@ insert into account (
 
 func (s *Store) UpdateUser(ctx context.Context, u *canopy.User) error {
 	res, err := s.db.ExecContext(ctx, `
-update "user" set name=$2, email=$3, email_verified=$4, image=$5, updated_at=$6 where id=$1`,
-		u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.UpdatedAt)
+update "user" set name=$2, email=$3, email_verified=$4, image=$5, role=$6, banned=$7, ban_reason=$8, ban_expires_at=$9, updated_at=$10 where id=$1`,
+		u.ID, u.Name, u.Email, u.EmailVerified, u.Image, u.Role, u.Banned, u.BanReason, u.BanExpiresAt, u.UpdatedAt)
 	return mapRows(err, res)
 }
 
@@ -118,24 +118,24 @@ where id=$1`,
 
 func (s *Store) CreateSession(ctx context.Context, ses *canopy.Session) error {
 	_, err := s.db.ExecContext(ctx, `
-insert into session (id, user_id, token, expires_at, ip_address, user_agent, created_at, updated_at)
-values ($1,$2,$3,$4,$5,$6,$7,$8)`,
-		ses.ID, ses.UserID, ses.Token, ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.CreatedAt, ses.UpdatedAt)
+insert into session (id, user_id, token, expires_at, ip_address, user_agent, active_organization_id, impersonated_by, created_at, updated_at)
+values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		ses.ID, ses.UserID, ses.Token, ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.ActiveOrganizationID, ses.ImpersonatedBy, ses.CreatedAt, ses.UpdatedAt)
 	return mapErr(err)
 }
 
 func (s *Store) FindSessionByToken(ctx context.Context, token string) (*canopy.SessionData, error) {
 	row := s.db.QueryRowContext(ctx, `
 select
-	u.id, u.name, u.email, u.email_verified, u.image, u.created_at, u.updated_at,
-	se.id, se.user_id, se.token, se.expires_at, se.ip_address, se.user_agent, se.created_at, se.updated_at
+	u.id, u.name, u.email, u.email_verified, u.image, u.role, u.banned, u.ban_reason, u.ban_expires_at, u.created_at, u.updated_at,
+	se.id, se.user_id, se.token, se.expires_at, se.ip_address, se.user_agent, se.active_organization_id, se.impersonated_by, se.created_at, se.updated_at
 from session se
 join "user" u on u.id = se.user_id
 where se.token=$1`, token)
 	var data canopy.SessionData
 	if err := row.Scan(
-		&data.User.ID, &data.User.Name, &data.User.Email, &data.User.EmailVerified, &data.User.Image, &data.User.CreatedAt, &data.User.UpdatedAt,
-		&data.Session.ID, &data.Session.UserID, &data.Session.Token, &data.Session.ExpiresAt, &data.Session.IPAddress, &data.Session.UserAgent, &data.Session.CreatedAt, &data.Session.UpdatedAt,
+		&data.User.ID, &data.User.Name, &data.User.Email, &data.User.EmailVerified, &data.User.Image, &data.User.Role, &data.User.Banned, &data.User.BanReason, &data.User.BanExpiresAt, &data.User.CreatedAt, &data.User.UpdatedAt,
+		&data.Session.ID, &data.Session.UserID, &data.Session.Token, &data.Session.ExpiresAt, &data.Session.IPAddress, &data.Session.UserAgent, &data.Session.ActiveOrganizationID, &data.Session.ImpersonatedBy, &data.Session.CreatedAt, &data.Session.UpdatedAt,
 	); err != nil {
 		return nil, mapErr(err)
 	}
@@ -144,8 +144,8 @@ where se.token=$1`, token)
 
 func (s *Store) UpdateSession(ctx context.Context, ses *canopy.Session) error {
 	res, err := s.db.ExecContext(ctx, `
-update session set expires_at=$2, ip_address=$3, user_agent=$4, updated_at=$5 where id=$1`,
-		ses.ID, ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.UpdatedAt)
+update session set expires_at=$2, ip_address=$3, user_agent=$4, active_organization_id=$5, impersonated_by=$6, updated_at=$7 where id=$1`,
+		ses.ID, ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.ActiveOrganizationID, ses.ImpersonatedBy, ses.UpdatedAt)
 	return mapRows(err, res)
 }
 
