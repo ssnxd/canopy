@@ -315,6 +315,25 @@ func (h *httpHandler) clearOAuthStateCookie(w http.ResponseWriter) {
 // This stops a large body from exhausting server memory.
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
+// WriteJSON writes a JSON response. A module handler uses it for a
+// response shape that matches the core handler.
+func WriteJSON(w http.ResponseWriter, status int, body any) {
+	writeJSON(w, status, body)
+}
+
+// WriteError writes a typed error as a JSON error envelope. A module
+// handler uses it for an error shape that matches the core handler.
+func WriteError(w http.ResponseWriter, err error) {
+	writeError(w, err)
+}
+
+// DecodeJSON decodes a size-limited JSON request body into dst. It writes
+// an error response and returns false on failure. A module handler uses
+// it for the same body limit and error shape as the core handler.
+func DecodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
+	return decodeJSON(w, r, dst)
+}
+
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 	defer r.Body.Close()

@@ -27,13 +27,16 @@ Implemented today:
 - Session cookies and session middleware.
 - Sign-out and session revocation.
 - Provider access-token refresh API.
+- Two-factor authentication (TOTP) with backup codes.
+- Module system for optional features and plugins.
 - Audit logging interface.
-- Postgres store and schema migration.
+- Postgres store and in-memory store.
 - Typed public errors for common auth failures.
 
 Not implemented yet:
 
-- Magic link, passkeys, two-factor auth, organization/team features, admin APIs, and plugins.
+- Magic link and passkeys. These stay out of scope for v1.
+- Organization/team features and admin APIs. These land in later v1 modules.
 - First-party adapters for Gin, Echo, Chi, Gorilla, etc. `net/http` works with most routers directly.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
@@ -662,6 +665,40 @@ Apple caveats:
 - Apple may not provide a refresh token in some flows.
 - Canopy verifies Apple ID tokens through OIDC and handles string or boolean `email_verified` claims.
 
+## Two-Factor Authentication
+
+Add the two-factor module for TOTP with backup codes.
+
+```go
+import "github.com/ssnxd/canopy/twofactor"
+
+auth, err := canopy.New(canopy.Config{
+	Store:   store,
+	Secret:  os.Getenv("CANOPY_SECRET"),
+	Modules: []canopy.Module{
+		twofactor.New(twofactor.Options{Issuer: "Example"}),
+	},
+})
+```
+
+The store must implement `canopy.TwoFactorStore`. The Postgres store and the in-memory store implement it.
+
+Endpoints (mounted under the auth handler):
+
+- `POST /two-factor/enable` — start enrollment. Returns the TOTP secret and an `otpauth://` URI. Requires a session.
+- `POST /two-factor/verify` — confirm enrollment with a code. Returns one-time backup codes. Requires a session.
+- `POST /two-factor/disable` — turn off two-factor. Requires a session and a valid code.
+- `POST /two-factor/challenge` — complete sign-in with a TOTP code.
+- `POST /two-factor/backup` — complete sign-in with a backup code.
+
+When a user enables two-factor, sign-in returns a challenge instead of a session:
+
+```json
+{ "twoFactorRequired": true, "token": "...", "methods": ["totp", "backup_code"] }
+```
+
+Send the challenge token and a code to `/two-factor/challenge` to receive the session. Canopy stores the TOTP secret encrypted. The default codec derives an AES-256-GCM key from `Secret`. Set `Options.Codec` to use a KMS or an HSM instead.
+
 ## Rate Limiting
 
 Canopy does not include built-in rate limiting. Apply rate limits in your application before requests reach Canopy's HTTP handler or service calls. This keeps brute-force protection close to your deployment topology, whether that is a reverse proxy, API gateway, shared Redis-backed middleware, or framework-specific middleware.
@@ -809,6 +846,8 @@ type Store interface {
 ```
 
 Custom stores should return Canopy typed errors where possible, especially `ErrNotFound` and `ErrConflict`.
+
+A module can require an optional store capability, such as `canopy.TwoFactorStore`. The Postgres store and the in-memory store (`store/memory`) implement the core store and the built-in capabilities. Use `store/memory` for tests and local development. It is not durable.
 
 ## Data Model
 

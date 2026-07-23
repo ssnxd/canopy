@@ -21,6 +21,7 @@ import (
 	"github.com/ssnxd/canopy"
 	authoauth "github.com/ssnxd/canopy/oauth"
 	"github.com/ssnxd/canopy/store/postgres"
+	"github.com/ssnxd/canopy/twofactor"
 	"golang.org/x/oauth2"
 )
 
@@ -192,6 +193,94 @@ func TestE2EOAuthHTTPWithPostgres(t *testing.T) {
 	handler.ServeHTTP(replay, req)
 	if replay.Code != http.StatusBadRequest {
 		t.Fatalf("replay status = %d, body = %s", replay.Code, replay.Body.String())
+	}
+}
+
+func TestE2ETwoFactorWithPostgres(t *testing.T) {
+	db := e2eDB(t)
+	auth := e2eAuth(t, db, canopy.Config{
+		Modules: []canopy.Module{twofactor.New(twofactor.Options{Issuer: "Canopy E2E"})},
+	})
+	handler := auth.Handler()
+	totp := twofactor.NewTOTP()
+
+	signup := postJSON(t, handler, "/sign-up/email", map[string]string{
+		"name": "Ada", "email": "tfa@example.com", "password": "correct-password",
+	}, nil)
+	if signup.Code != http.StatusOK {
+		t.Fatalf("signup status = %d, body = %s", signup.Code, signup.Body.String())
+	}
+	sessionCookie := cookieNamed(t, signup.Result().Cookies(), "canopy.session_token")
+
+	enable := postJSON(t, handler, "/two-factor/enable", map[string]string{}, []*http.Cookie{sessionCookie})
+	if enable.Code != http.StatusOK {
+		t.Fatalf("enable status = %d, body = %s", enable.Code, enable.Body.String())
+	}
+	var enableBody struct {
+		Secret string `json:"secret"`
+	}
+	if err := json.NewDecoder(enable.Body).Decode(&enableBody); err != nil {
+		t.Fatal(err)
+	}
+
+	code, err := totp.GenerateCode(enableBody.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	verify := postJSON(t, handler, "/two-factor/verify", map[string]string{"code": code}, []*http.Cookie{sessionCookie})
+	if verify.Code != http.StatusOK {
+		t.Fatalf("verify status = %d, body = %s", verify.Code, verify.Body.String())
+	}
+	var verifyBody struct {
+		BackupCodes []string `json:"backupCodes"`
+	}
+	if err := json.NewDecoder(verify.Body).Decode(&verifyBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(verifyBody.BackupCodes) == 0 {
+		t.Fatal("no backup codes returned")
+	}
+
+	// Sign-in now returns a challenge instead of a session.
+	challengeToken := func() string {
+		signin := postJSON(t, handler, "/sign-in/email", map[string]string{
+			"email": "tfa@example.com", "password": "correct-password",
+		}, nil)
+		if signin.Code != http.StatusOK {
+			t.Fatalf("signin status = %d, body = %s", signin.Code, signin.Body.String())
+		}
+		var body struct {
+			TwoFactorRequired bool   `json:"twoFactorRequired"`
+			Token             string `json:"token"`
+		}
+		if err := json.NewDecoder(signin.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		if !body.TwoFactorRequired || body.Token == "" {
+			t.Fatalf("expected a challenge, got %#v", body)
+		}
+		return body.Token
+	}
+
+	// Complete with a TOTP code.
+	code2, err := totp.GenerateCode(enableBody.Secret, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	challenge := postJSON(t, handler, "/two-factor/challenge", map[string]any{"token": challengeToken(), "code": code2}, nil)
+	if challenge.Code != http.StatusOK {
+		t.Fatalf("challenge status = %d, body = %s", challenge.Code, challenge.Body.String())
+	}
+	cookieNamed(t, challenge.Result().Cookies(), "canopy.session_token")
+
+	// A backup code works once.
+	backup := postJSON(t, handler, "/two-factor/backup", map[string]any{"token": challengeToken(), "code": verifyBody.BackupCodes[0]}, nil)
+	if backup.Code != http.StatusOK {
+		t.Fatalf("backup status = %d, body = %s", backup.Code, backup.Body.String())
+	}
+	reuse := postJSON(t, handler, "/two-factor/backup", map[string]any{"token": challengeToken(), "code": verifyBody.BackupCodes[0]}, nil)
+	if reuse.Code != http.StatusUnauthorized {
+		t.Fatalf("reused backup status = %d, want 401", reuse.Code)
 	}
 }
 

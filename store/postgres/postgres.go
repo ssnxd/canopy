@@ -191,6 +191,71 @@ func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) e
 	return mapErr(err)
 }
 
+func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
+	row := s.db.QueryRowContext(ctx, `
+select user_id, secret, enabled, created_at, updated_at from two_factor where user_id=$1`, userID)
+	var tf canopy.TwoFactor
+	if err := row.Scan(&tf.UserID, &tf.Secret, &tf.Enabled, &tf.CreatedAt, &tf.UpdatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &tf, nil
+}
+
+func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into two_factor (user_id, secret, enabled, created_at, updated_at)
+values ($1,$2,$3,$4,$5)
+on conflict (user_id) do update set secret=excluded.secret, enabled=excluded.enabled, updated_at=excluded.updated_at`,
+		tf.UserID, tf.Secret, tf.Enabled, tf.CreatedAt, tf.UpdatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1`, userID); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `delete from two_factor where user_id=$1`, userID); err != nil {
+		return mapErr(err)
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ReplaceBackupCodes(ctx context.Context, userID string, codeHashes []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1`, userID); err != nil {
+		return mapErr(err)
+	}
+	now := time.Now().UTC()
+	for _, hash := range codeHashes {
+		if _, err := tx.ExecContext(ctx, `
+insert into two_factor_backup_code (user_id, code_hash, created_at) values ($1,$2,$3)`, userID, hash, now); err != nil {
+			return mapErr(err)
+		}
+	}
+	return tx.Commit()
+}
+
+func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1 and code_hash=$2`, userID, codeHash)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

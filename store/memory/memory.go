@@ -1,0 +1,298 @@
+// Package memory is an in-memory canopy.Store. It is useful for tests and
+// for local development. It is not durable and it does not scale across
+// processes. Use a persistent store such as store/postgres in production.
+package memory
+
+import (
+	"context"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/ssnxd/canopy"
+)
+
+// Store is an in-memory implementation of canopy.Store. It also
+// implements the optional capability interfaces.
+type Store struct {
+	mu            sync.Mutex
+	users         map[string]*canopy.User
+	accounts      map[string]*canopy.Account
+	sessions      map[string]*canopy.Session
+	verifications map[string]*canopy.Verification
+	twoFactor     map[string]*canopy.TwoFactor
+	backupCodes   map[string]map[string]bool
+}
+
+// New returns an empty in-memory store.
+func New() *Store {
+	return &Store{
+		users:         map[string]*canopy.User{},
+		accounts:      map[string]*canopy.Account{},
+		sessions:      map[string]*canopy.Session{},
+		verifications: map[string]*canopy.Verification{},
+		twoFactor:     map[string]*canopy.TwoFactor{},
+		backupCodes:   map[string]map[string]bool{},
+	}
+}
+
+func normalizeEmail(email string) string {
+	return strings.ToLower(strings.TrimSpace(email))
+}
+
+func accountKey(providerID, accountID string) string {
+	return providerID + "|" + accountID
+}
+
+func (s *Store) FindUserByID(ctx context.Context, id string) (*canopy.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if u := s.users[id]; u != nil {
+		cp := *u
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) FindUserByEmail(ctx context.Context, email string) (*canopy.User, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	target := normalizeEmail(email)
+	for _, u := range s.users {
+		if normalizeEmail(u.Email) == target {
+			cp := *u
+			return &cp, nil
+		}
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) CreateUser(ctx context.Context, user *canopy.User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createUserLocked(user)
+}
+
+func (s *Store) createUserLocked(user *canopy.User) error {
+	target := normalizeEmail(user.Email)
+	for _, u := range s.users {
+		if normalizeEmail(u.Email) == target {
+			return canopy.ErrConflict
+		}
+	}
+	cp := *user
+	s.users[user.ID] = &cp
+	return nil
+}
+
+func (s *Store) UpdateUser(ctx context.Context, user *canopy.User) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.users[user.ID] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *user
+	s.users[user.ID] = &cp
+	return nil
+}
+
+func (s *Store) FindAccount(ctx context.Context, providerID, accountID string) (*canopy.Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if a := s.accounts[accountKey(providerID, accountID)]; a != nil {
+		cp := *a
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) FindAccountByUserProvider(ctx context.Context, userID, providerID string) (*canopy.Account, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, a := range s.accounts {
+		if a.UserID == userID && a.ProviderID == providerID {
+			cp := *a
+			return &cp, nil
+		}
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) CreateAccount(ctx context.Context, account *canopy.Account) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.createAccountLocked(account)
+}
+
+func (s *Store) createAccountLocked(account *canopy.Account) error {
+	if s.accounts[accountKey(account.ProviderID, account.AccountID)] != nil {
+		return canopy.ErrConflict
+	}
+	for _, a := range s.accounts {
+		if a.UserID == account.UserID && a.ProviderID == account.ProviderID {
+			return canopy.ErrConflict
+		}
+	}
+	cp := *account
+	s.accounts[accountKey(account.ProviderID, account.AccountID)] = &cp
+	return nil
+}
+
+func (s *Store) CreateUserAccount(ctx context.Context, user *canopy.User, account *canopy.Account) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.createUserLocked(user); err != nil {
+		return err
+	}
+	if err := s.createAccountLocked(account); err != nil {
+		delete(s.users, user.ID)
+		return err
+	}
+	return nil
+}
+
+func (s *Store) UpdateAccount(ctx context.Context, account *canopy.Account) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := accountKey(account.ProviderID, account.AccountID)
+	if s.accounts[key] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *account
+	s.accounts[key] = &cp
+	return nil
+}
+
+func (s *Store) CreateSession(ctx context.Context, session *canopy.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *session
+	s.sessions[session.Token] = &cp
+	return nil
+}
+
+func (s *Store) FindSessionByToken(ctx context.Context, token string) (*canopy.SessionData, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	session := s.sessions[token]
+	if session == nil {
+		return nil, canopy.ErrNotFound
+	}
+	user := s.users[session.UserID]
+	if user == nil {
+		return nil, canopy.ErrNotFound
+	}
+	return &canopy.SessionData{User: *user, Session: *session}, nil
+}
+
+func (s *Store) UpdateSession(ctx context.Context, session *canopy.Session) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[session.Token] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *session
+	s.sessions[session.Token] = &cp
+	return nil
+}
+
+func (s *Store) DeleteSessionByToken(ctx context.Context, token string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sessions[token] == nil {
+		return canopy.ErrNotFound
+	}
+	delete(s.sessions, token)
+	return nil
+}
+
+func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, session := range s.sessions {
+		if session.UserID == userID {
+			delete(s.sessions, token)
+		}
+	}
+	return nil
+}
+
+func (s *Store) CreateVerification(ctx context.Context, v *canopy.Verification) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *v
+	s.verifications[v.Identifier+"|"+v.Value] = &cp
+	return nil
+}
+
+func (s *Store) ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*canopy.Verification, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := identifier + "|" + value
+	v := s.verifications[key]
+	if v == nil || !v.ExpiresAt.After(now) {
+		return nil, canopy.ErrNotFound
+	}
+	delete(s.verifications, key)
+	cp := *v
+	return &cp, nil
+}
+
+func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, v := range s.verifications {
+		if !v.ExpiresAt.After(now) {
+			delete(s.verifications, key)
+		}
+	}
+	return nil
+}
+
+func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tf := s.twoFactor[userID]; tf != nil {
+		cp := *tf
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *tf
+	s.twoFactor[tf.UserID] = &cp
+	return nil
+}
+
+func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.twoFactor, userID)
+	delete(s.backupCodes, userID)
+	return nil
+}
+
+func (s *Store) ReplaceBackupCodes(ctx context.Context, userID string, codeHashes []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := make(map[string]bool, len(codeHashes))
+	for _, hash := range codeHashes {
+		set[hash] = true
+	}
+	s.backupCodes[userID] = set
+	return nil
+}
+
+func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	set := s.backupCodes[userID]
+	if set == nil || !set[codeHash] {
+		return false, nil
+	}
+	delete(set, codeHash)
+	return true, nil
+}

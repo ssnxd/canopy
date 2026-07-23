@@ -65,4 +65,19 @@ alter table "user" add column if not exists ban_expires_at timestamptz;
 
 alter table session add column if not exists active_organization_id text not null default '';
 alter table session add column if not exists impersonated_by text not null default '';
+
+create table if not exists two_factor (
+	user_id text primary key references "user"(id) on delete cascade,
+	secret text not null,
+	enabled boolean not null default false,
+	created_at timestamptz not null,
+	updated_at timestamptz not null
+);
+
+create table if not exists two_factor_backup_code (
+	user_id text not null references "user"(id) on delete cascade,
+	code_hash text not null,
+	created_at timestamptz not null,
+	primary key (user_id, code_hash)
+);
 `
