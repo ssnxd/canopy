@@ -20,6 +20,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/ssnxd/canopy"
 	authoauth "github.com/ssnxd/canopy/oauth"
+	"github.com/ssnxd/canopy/organization"
 	"github.com/ssnxd/canopy/store/postgres"
 	"github.com/ssnxd/canopy/twofactor"
 	"golang.org/x/oauth2"
@@ -282,6 +283,75 @@ func TestE2ETwoFactorWithPostgres(t *testing.T) {
 	if reuse.Code != http.StatusUnauthorized {
 		t.Fatalf("reused backup status = %d, want 401", reuse.Code)
 	}
+}
+
+func TestE2EOrganizationWithPostgres(t *testing.T) {
+	db := e2eDB(t)
+	auth := e2eAuth(t, db, canopy.Config{
+		Modules: []canopy.Module{organization.New(organization.Options{})},
+	})
+	handler := auth.Handler()
+
+	ownerCookie := e2eSignUp(t, handler, "Ada", "owner@example.com")
+	inviteeCookie := e2eSignUp(t, handler, "Grace", "member@example.com")
+
+	create := postJSON(t, handler, "/organization/create", map[string]string{"name": "Acme Inc"}, []*http.Cookie{ownerCookie})
+	if create.Code != http.StatusOK {
+		t.Fatalf("create status = %d, body = %s", create.Code, create.Body.String())
+	}
+	var org canopy.Organization
+	if err := json.NewDecoder(create.Body).Decode(&org); err != nil {
+		t.Fatal(err)
+	}
+
+	invite := postJSON(t, handler, "/organization/invite", map[string]string{
+		"organizationId": org.ID, "email": "member@example.com", "role": organization.RoleMember,
+	}, []*http.Cookie{ownerCookie})
+	if invite.Code != http.StatusOK {
+		t.Fatalf("invite status = %d, body = %s", invite.Code, invite.Body.String())
+	}
+	var invitation canopy.Invitation
+	if err := json.NewDecoder(invite.Body).Decode(&invitation); err != nil {
+		t.Fatal(err)
+	}
+
+	accept := postJSON(t, handler, "/organization/accept-invitation", map[string]string{"invitationId": invitation.ID}, []*http.Cookie{inviteeCookie})
+	if accept.Code != http.StatusOK {
+		t.Fatalf("accept status = %d, body = %s", accept.Code, accept.Body.String())
+	}
+
+	setActive := postJSON(t, handler, "/organization/set-active", map[string]string{"organizationId": org.ID}, []*http.Cookie{inviteeCookie})
+	if setActive.Code != http.StatusOK {
+		t.Fatalf("set-active status = %d, body = %s", setActive.Code, setActive.Body.String())
+	}
+
+	membersReq := httptest.NewRequest(http.MethodGet, "/organization/members?organizationId="+org.ID, nil)
+	membersReq.AddCookie(ownerCookie)
+	membersRec := httptest.NewRecorder()
+	handler.ServeHTTP(membersRec, membersReq)
+	if membersRec.Code != http.StatusOK {
+		t.Fatalf("members status = %d, body = %s", membersRec.Code, membersRec.Body.String())
+	}
+	var membersBody struct {
+		Members []canopy.Member `json:"members"`
+	}
+	if err := json.NewDecoder(membersRec.Body).Decode(&membersBody); err != nil {
+		t.Fatal(err)
+	}
+	if len(membersBody.Members) != 2 {
+		t.Fatalf("members = %d, want 2", len(membersBody.Members))
+	}
+}
+
+func e2eSignUp(t *testing.T, handler http.Handler, name, email string) *http.Cookie {
+	t.Helper()
+	rec := postJSON(t, handler, "/sign-up/email", map[string]string{
+		"name": name, "email": email, "password": "correct-password",
+	}, nil)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("signup status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	return cookieNamed(t, rec.Result().Cookies(), "canopy.session_token")
 }
 
 func e2eAuth(t *testing.T, db *sql.DB, cfg canopy.Config) *canopy.Auth {

@@ -28,6 +28,7 @@ Implemented today:
 - Sign-out and session revocation.
 - Provider access-token refresh API.
 - Two-factor authentication (TOTP) with backup codes.
+- Organizations, members, roles, and invitations.
 - Module system for optional features and plugins.
 - Audit logging interface.
 - Postgres store and in-memory store.
@@ -36,7 +37,7 @@ Implemented today:
 Not implemented yet:
 
 - Magic link and passkeys. These stay out of scope for v1.
-- Organization/team features and admin APIs. These land in later v1 modules.
+- Teams within organizations and admin APIs. These land in later v1 modules.
 - First-party adapters for Gin, Echo, Chi, Gorilla, etc. `net/http` works with most routers directly.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
@@ -698,6 +699,39 @@ When a user enables two-factor, sign-in returns a challenge instead of a session
 ```
 
 Send the challenge token and a code to `/two-factor/challenge` to receive the session. Canopy stores the TOTP secret encrypted. The default codec derives an AES-256-GCM key from `Secret`. Set `Options.Codec` to use a KMS or an HSM instead.
+
+## Organizations
+
+Add the organization module for organizations, members, roles, and invitations.
+
+```go
+import "github.com/ssnxd/canopy/organization"
+
+auth, err := canopy.New(canopy.Config{
+	Store:   store,
+	Secret:  os.Getenv("CANOPY_SECRET"),
+	Modules: []canopy.Module{
+		organization.New(organization.Options{}),
+	},
+})
+```
+
+The store must implement `canopy.OrganizationStore`. The Postgres store and the in-memory store implement it.
+
+Endpoints (mounted under the auth handler, all require a session):
+
+- `POST /organization/create` — create an organization. The creator becomes the owner.
+- `GET /organization/list` — list the organizations of the current user.
+- `POST /organization/set-active` — set the active organization on the session.
+- `POST /organization/invite` — invite an email address with a role. Returns the invitation.
+- `POST /organization/accept-invitation` — accept an invitation. The session email must match the invited email.
+- `GET /organization/members?organizationId=...` — list members.
+- `POST /organization/update-member-role` — change a member role.
+- `POST /organization/remove-member` — remove a member.
+
+Roles are `owner`, `admin`, and `member`. The default `Authorizer` maps roles to permissions. Set `Options.Authorizer` for custom access control. The owner cannot be removed and only an owner can change an owner.
+
+An invitation returns a token, which is its id. Your application delivers the invitation link to the invitee. The invitee accepts it while signed in with the invited email address. Read the active organization from `SessionData.Session.ActiveOrganizationID`.
 
 ## Rate Limiting
 

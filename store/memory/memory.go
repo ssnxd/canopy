@@ -22,6 +22,9 @@ type Store struct {
 	verifications map[string]*canopy.Verification
 	twoFactor     map[string]*canopy.TwoFactor
 	backupCodes   map[string]map[string]bool
+	organizations map[string]*canopy.Organization
+	members       map[string]*canopy.Member
+	invitations   map[string]*canopy.Invitation
 }
 
 // New returns an empty in-memory store.
@@ -33,8 +36,13 @@ func New() *Store {
 		verifications: map[string]*canopy.Verification{},
 		twoFactor:     map[string]*canopy.TwoFactor{},
 		backupCodes:   map[string]map[string]bool{},
+		organizations: map[string]*canopy.Organization{},
+		members:       map[string]*canopy.Member{},
+		invitations:   map[string]*canopy.Invitation{},
 	}
 }
+
+func memberKey(orgID, userID string) string { return orgID + "|" + userID }
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
@@ -295,4 +303,177 @@ func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) 
 	}
 	delete(set, codeHash)
 	return true, nil
+}
+
+func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, o := range s.organizations {
+		if strings.EqualFold(o.Slug, org.Slug) {
+			return canopy.ErrConflict
+		}
+	}
+	cp := *org
+	s.organizations[org.ID] = &cp
+	return nil
+}
+
+func (s *Store) FindOrganizationByID(ctx context.Context, id string) (*canopy.Organization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if o := s.organizations[id]; o != nil {
+		cp := *o
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (*canopy.Organization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, o := range s.organizations {
+		if strings.EqualFold(o.Slug, slug) {
+			cp := *o
+			return &cp, nil
+		}
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) ListOrganizationsForUser(ctx context.Context, userID string) ([]canopy.Organization, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var orgs []canopy.Organization
+	for _, m := range s.members {
+		if m.UserID == userID {
+			if o := s.organizations[m.OrganizationID]; o != nil {
+				orgs = append(orgs, *o)
+			}
+		}
+	}
+	return orgs, nil
+}
+
+func (s *Store) UpdateOrganization(ctx context.Context, org *canopy.Organization) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.organizations[org.ID] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *org
+	s.organizations[org.ID] = &cp
+	return nil
+}
+
+func (s *Store) DeleteOrganization(ctx context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.organizations[id] == nil {
+		return canopy.ErrNotFound
+	}
+	delete(s.organizations, id)
+	for key, m := range s.members {
+		if m.OrganizationID == id {
+			delete(s.members, key)
+		}
+	}
+	return nil
+}
+
+func (s *Store) CreateMember(ctx context.Context, member *canopy.Member) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := memberKey(member.OrganizationID, member.UserID)
+	if s.members[key] != nil {
+		return canopy.ErrConflict
+	}
+	cp := *member
+	s.members[key] = &cp
+	return nil
+}
+
+func (s *Store) FindMember(ctx context.Context, orgID, userID string) (*canopy.Member, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if m := s.members[memberKey(orgID, userID)]; m != nil {
+		cp := *m
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) ListMembers(ctx context.Context, orgID string) ([]canopy.Member, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var members []canopy.Member
+	for _, m := range s.members {
+		if m.OrganizationID == orgID {
+			members = append(members, *m)
+		}
+	}
+	return members, nil
+}
+
+func (s *Store) UpdateMember(ctx context.Context, member *canopy.Member) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := memberKey(member.OrganizationID, member.UserID)
+	if s.members[key] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *member
+	s.members[key] = &cp
+	return nil
+}
+
+func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := memberKey(orgID, userID)
+	if s.members[key] == nil {
+		return canopy.ErrNotFound
+	}
+	delete(s.members, key)
+	return nil
+}
+
+func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cp := *invitation
+	s.invitations[invitation.ID] = &cp
+	return nil
+}
+
+func (s *Store) FindInvitation(ctx context.Context, id string) (*canopy.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if v := s.invitations[id]; v != nil {
+		cp := *v
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) ListInvitationsForOrg(ctx context.Context, orgID string) ([]canopy.Invitation, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var invitations []canopy.Invitation
+	for _, v := range s.invitations {
+		if v.OrganizationID == orgID {
+			invitations = append(invitations, *v)
+		}
+	}
+	return invitations, nil
+}
+
+func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.invitations[invitation.ID] == nil {
+		return canopy.ErrNotFound
+	}
+	cp := *invitation
+	s.invitations[invitation.ID] = &cp
+	return nil
 }

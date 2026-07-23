@@ -256,6 +256,166 @@ func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) 
 	return n > 0, nil
 }
 
+func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into organization (id, name, slug, created_at, updated_at) values ($1,$2,$3,$4,$5)`,
+		org.ID, org.Name, org.Slug, org.CreatedAt, org.UpdatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) FindOrganizationByID(ctx context.Context, id string) (*canopy.Organization, error) {
+	row := s.db.QueryRowContext(ctx, `select id, name, slug, created_at, updated_at from organization where id=$1`, id)
+	return scanOrganization(row)
+}
+
+func (s *Store) FindOrganizationBySlug(ctx context.Context, slug string) (*canopy.Organization, error) {
+	row := s.db.QueryRowContext(ctx, `select id, name, slug, created_at, updated_at from organization where lower(slug)=lower($1)`, slug)
+	return scanOrganization(row)
+}
+
+func (s *Store) ListOrganizationsForUser(ctx context.Context, userID string) ([]canopy.Organization, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select o.id, o.name, o.slug, o.created_at, o.updated_at
+from organization o
+join organization_member m on m.organization_id = o.id
+where m.user_id = $1
+order by o.created_at`, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var orgs []canopy.Organization
+	for rows.Next() {
+		var o canopy.Organization
+		if err := rows.Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		orgs = append(orgs, o)
+	}
+	return orgs, mapErr(rows.Err())
+}
+
+func (s *Store) UpdateOrganization(ctx context.Context, org *canopy.Organization) error {
+	res, err := s.db.ExecContext(ctx, `update organization set name=$2, slug=$3, updated_at=$4 where id=$1`,
+		org.ID, org.Name, org.Slug, org.UpdatedAt)
+	return mapRows(err, res)
+}
+
+func (s *Store) DeleteOrganization(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `delete from organization where id=$1`, id)
+	return mapRows(err, res)
+}
+
+func (s *Store) CreateMember(ctx context.Context, member *canopy.Member) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into organization_member (id, organization_id, user_id, role, created_at, updated_at) values ($1,$2,$3,$4,$5,$6)`,
+		member.ID, member.OrganizationID, member.UserID, member.Role, member.CreatedAt, member.UpdatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) FindMember(ctx context.Context, orgID, userID string) (*canopy.Member, error) {
+	row := s.db.QueryRowContext(ctx, `
+select id, organization_id, user_id, role, created_at, updated_at
+from organization_member where organization_id=$1 and user_id=$2`, orgID, userID)
+	return scanMember(row)
+}
+
+func (s *Store) ListMembers(ctx context.Context, orgID string) ([]canopy.Member, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, organization_id, user_id, role, created_at, updated_at
+from organization_member where organization_id=$1 order by created_at`, orgID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var members []canopy.Member
+	for rows.Next() {
+		var m canopy.Member
+		if err := rows.Scan(&m.ID, &m.OrganizationID, &m.UserID, &m.Role, &m.CreatedAt, &m.UpdatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		members = append(members, m)
+	}
+	return members, mapErr(rows.Err())
+}
+
+func (s *Store) UpdateMember(ctx context.Context, member *canopy.Member) error {
+	res, err := s.db.ExecContext(ctx, `update organization_member set role=$3, updated_at=$4 where organization_id=$1 and user_id=$2`,
+		member.OrganizationID, member.UserID, member.Role, member.UpdatedAt)
+	return mapRows(err, res)
+}
+
+func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
+	res, err := s.db.ExecContext(ctx, `delete from organization_member where organization_id=$1 and user_id=$2`, orgID, userID)
+	return mapRows(err, res)
+}
+
+func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into organization_invitation (id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at)
+values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+		invitation.ID, invitation.OrganizationID, invitation.Email, invitation.Role, invitation.Status,
+		invitation.InviterID, invitation.ExpiresAt, invitation.CreatedAt, invitation.UpdatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) FindInvitation(ctx context.Context, id string) (*canopy.Invitation, error) {
+	row := s.db.QueryRowContext(ctx, `
+select id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at
+from organization_invitation where id=$1`, id)
+	return scanInvitation(row)
+}
+
+func (s *Store) ListInvitationsForOrg(ctx context.Context, orgID string) ([]canopy.Invitation, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at
+from organization_invitation where organization_id=$1 order by created_at`, orgID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var invitations []canopy.Invitation
+	for rows.Next() {
+		var v canopy.Invitation
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		invitations = append(invitations, v)
+	}
+	return invitations, mapErr(rows.Err())
+}
+
+func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
+	res, err := s.db.ExecContext(ctx, `
+update organization_invitation set email=$2, role=$3, status=$4, expires_at=$5, updated_at=$6 where id=$1`,
+		invitation.ID, invitation.Email, invitation.Role, invitation.Status, invitation.ExpiresAt, invitation.UpdatedAt)
+	return mapRows(err, res)
+}
+
+func scanOrganization(row scanner) (*canopy.Organization, error) {
+	var o canopy.Organization
+	if err := row.Scan(&o.ID, &o.Name, &o.Slug, &o.CreatedAt, &o.UpdatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &o, nil
+}
+
+func scanMember(row scanner) (*canopy.Member, error) {
+	var m canopy.Member
+	if err := row.Scan(&m.ID, &m.OrganizationID, &m.UserID, &m.Role, &m.CreatedAt, &m.UpdatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &m, nil
+}
+
+func scanInvitation(row scanner) (*canopy.Invitation, error) {
+	var v canopy.Invitation
+	if err := row.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &v, nil
+}
+
 type scanner interface {
 	Scan(dest ...any) error
 }

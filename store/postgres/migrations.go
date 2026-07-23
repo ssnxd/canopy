@@ -80,4 +80,40 @@ create table if not exists two_factor_backup_code (
 	created_at timestamptz not null,
 	primary key (user_id, code_hash)
 );
+
+create table if not exists organization (
+	id text primary key,
+	name text not null,
+	slug text not null,
+	created_at timestamptz not null,
+	updated_at timestamptz not null
+);
+
+create unique index if not exists organization_slug_unique on organization (lower(slug));
+
+create table if not exists organization_member (
+	id text primary key,
+	organization_id text not null references organization(id) on delete cascade,
+	user_id text not null references "user"(id) on delete cascade,
+	role text not null,
+	created_at timestamptz not null,
+	updated_at timestamptz not null
+);
+
+create unique index if not exists organization_member_unique on organization_member (organization_id, user_id);
+create index if not exists organization_member_user_idx on organization_member (user_id);
+
+create table if not exists organization_invitation (
+	id text primary key,
+	organization_id text not null references organization(id) on delete cascade,
+	email text not null,
+	role text not null,
+	status text not null,
+	inviter_id text not null default '',
+	expires_at timestamptz not null,
+	created_at timestamptz not null,
+	updated_at timestamptz not null
+);
+
+create index if not exists organization_invitation_org_idx on organization_invitation (organization_id);
 `
