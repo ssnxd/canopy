@@ -15,6 +15,12 @@ type Config struct {
 	Expiry               time.Duration
 	UpdateAge            time.Duration
 	BrowserSessionMaxAge time.Duration
+
+	// AbsoluteMaxAge caps the total lifetime of a session. A session
+	// cannot live past this age even with regular use.
+	AbsoluteMaxAge time.Duration
+	// DisableAbsoluteExpiry turns off the absolute lifetime cap.
+	DisableAbsoluteExpiry bool
 }
 
 type Codec interface {
@@ -47,6 +53,9 @@ func (c *Config) SetDefaults(production bool) {
 	}
 	if c.BrowserSessionMaxAge == 0 {
 		c.BrowserSessionMaxAge = c.Expiry
+	}
+	if c.AbsoluteMaxAge == 0 {
+		c.AbsoluteMaxAge = 30 * 24 * time.Hour
 	}
 }
 

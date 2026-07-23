@@ -181,6 +181,7 @@ Defaults:
 - Password hashing: Argon2id.
 - Session expiry: 7 days.
 - Session refresh/update age: 1 day.
+- Session absolute lifetime: 30 days.
 - Session cookie: `canopy.session_token`.
 - OAuth state TTL: 10 minutes.
 - Email verification TTL: 24 hours.

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	authoauth "github.com/ssnxd/canopy/oauth"
 	"github.com/ssnxd/canopy/password"
@@ -187,6 +188,36 @@ func TestResolveCallbackURL(t *testing.T) {
 		if got := cfg.resolveCallbackURL(c.in); got != c.want {
 			t.Errorf("resolveCallbackURL(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// A session must expire at the absolute lifetime cap, even when it has
+// not reached its sliding expiry.
+func TestSessionAbsoluteLifetimeCap(t *testing.T) {
+	store := newMemoryStore()
+	auth, err := New(Config{Store: store, Secret: "dev-secret-with-enough-test-entropy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	_, token, err := auth.API().SignUpEmail(ctx, SignUpEmailInput{Name: "Ada", Email: "ada@example.com", Password: "correct-password"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.API().GetSession(ctx, token); err != nil {
+		t.Fatalf("fresh session err = %v, want nil", err)
+	}
+	// Age the session past the default 30 day cap. Keep the sliding
+	// expiry in the future so only the absolute cap can end it.
+	store.mu.Lock()
+	store.sessionsByTok[token].CreatedAt = time.Now().UTC().Add(-31 * 24 * time.Hour)
+	store.mu.Unlock()
+
+	if _, err := auth.API().GetSession(ctx, token); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("aged session err = %v, want ErrUnauthorized", err)
+	}
+	if _, err := store.FindSessionByToken(ctx, token); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("expired session was not deleted: %v", err)
 	}
 }
 

@@ -615,6 +615,18 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, e
 		_ = s.cfg.Store.DeleteSessionByToken(ctx, token)
 		return nil, ErrUnauthorized
 	}
+	// Enforce an absolute lifetime. A session cannot live past this cap
+	// even with regular use. This limits how long a stolen token stays
+	// valid.
+	absoluteEnabled := !s.cfg.Session.DisableAbsoluteExpiry && s.cfg.Session.AbsoluteMaxAge > 0
+	var deadline time.Time
+	if absoluteEnabled {
+		deadline = data.Session.CreatedAt.Add(s.cfg.Session.AbsoluteMaxAge)
+		if !now.Before(deadline) {
+			_ = s.cfg.Store.DeleteSessionByToken(ctx, token)
+			return nil, ErrUnauthorized
+		}
+	}
 	// Do not treat an unverified user as authenticated when the
 	// application requires email verification. The same session works
 	// after the user verifies the email.
@@ -623,6 +635,9 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, e
 	}
 	if s.cfg.Session.UpdateAge > 0 && now.Sub(data.Session.UpdatedAt) >= s.cfg.Session.UpdateAge {
 		data.Session.ExpiresAt = now.Add(s.cfg.Session.Expiry)
+		if absoluteEnabled && data.Session.ExpiresAt.After(deadline) {
+			data.Session.ExpiresAt = deadline
+		}
 		data.Session.UpdatedAt = now
 		_ = s.cfg.Store.UpdateSession(ctx, &data.Session)
 	}
