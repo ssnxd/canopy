@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/http"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/ssnxd/canopy/oauth"
@@ -95,6 +96,8 @@ type ResetPasswordInput struct {
 type Service struct {
 	cfg       Config
 	providers map[string]oauth.Provider
+	dummyOnce sync.Once
+	dummyHash string
 }
 
 type userAccountStore interface {
@@ -560,19 +563,25 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 
 func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SessionData, string, error) {
 	email := normalizeEmail(in.Email)
-	user, err := s.cfg.Store.FindUserByEmail(ctx, email)
-	if err != nil {
-		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
-		return nil, "", ErrInvalidCredentials
+	user, userErr := s.cfg.Store.FindUserByEmail(ctx, email)
+	var account *Account
+	if userErr == nil {
+		account, _ = s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
 	}
-	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
-	if err != nil || account.Password == "" {
-		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
-		return nil, "", ErrInvalidCredentials
+	// Always run a password verify, even when the account is missing.
+	// This keeps the response time constant. It stops an attacker from
+	// learning if an account exists through a timing side channel.
+	encodedHash := s.passwordEqualizerHash()
+	if account != nil && account.Password != "" {
+		encodedHash = account.Password
 	}
-	ok, needsRehash, err := s.cfg.PasswordHasher.Verify(ctx, in.Password, account.Password)
-	if err != nil || !ok {
-		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: user.ID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
+	ok, needsRehash, verifyErr := s.cfg.PasswordHasher.Verify(ctx, in.Password, encodedHash)
+	if userErr != nil || account == nil || account.Password == "" || verifyErr != nil || !ok {
+		auditUserID := ""
+		if userErr == nil {
+			auditUserID = user.ID
+		}
+		s.audit(ctx, AuditEvent{Type: "sign_in.email.failed", UserID: auditUserID, Email: email, IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: false, Error: ErrInvalidCredentials.Error()})
 		return nil, "", ErrInvalidCredentials
 	}
 	if s.cfg.RequireEmailVerification && !user.EmailVerified {
@@ -690,6 +699,19 @@ func (s *Service) createSession(ctx context.Context, user User, rememberMe *bool
 		}
 	}
 	return data, token, nil
+}
+
+// passwordEqualizerHash returns a stable decoy hash. A sign-in for a
+// missing account verifies the supplied password against this hash.
+// The decoy uses the configured hasher, so the work matches a real
+// verify. This removes the timing signal that reveals account existence.
+func (s *Service) passwordEqualizerHash() string {
+	s.dummyOnce.Do(func() {
+		if hash, err := s.cfg.PasswordHasher.Hash(context.Background(), "canopy-timing-equalizer"); err == nil {
+			s.dummyHash = hash
+		}
+	})
+	return s.dummyHash
 }
 
 func (s *Service) createUserAccount(ctx context.Context, user *User, account *Account) error {

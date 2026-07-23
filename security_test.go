@@ -2,11 +2,68 @@ package canopy
 
 import (
 	"context"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	authoauth "github.com/ssnxd/canopy/oauth"
+	"github.com/ssnxd/canopy/password"
 )
+
+// countingHasher wraps a hasher and counts Verify calls.
+type countingHasher struct {
+	mu       sync.Mutex
+	inner    password.Hasher
+	verifies int
+}
+
+func newCountingHasher() *countingHasher {
+	return &countingHasher{inner: &password.Argon2idHasher{Memory: 1024, Iterations: 1, Parallelism: 1, SaltLength: 8, KeyLength: 16}}
+}
+
+func (h *countingHasher) Hash(ctx context.Context, pw string) (string, error) {
+	return h.inner.Hash(ctx, pw)
+}
+
+func (h *countingHasher) Verify(ctx context.Context, pw, encoded string) (bool, bool, error) {
+	h.mu.Lock()
+	h.verifies++
+	h.mu.Unlock()
+	return h.inner.Verify(ctx, pw, encoded)
+}
+
+func (h *countingHasher) count() int {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	return h.verifies
+}
+
+// A sign-in for an unknown user must still run a password verify.
+// A missing verify would leak account existence through response time.
+func TestSignInVerifiesEvenForUnknownUser(t *testing.T) {
+	hasher := newCountingHasher()
+	auth, err := New(Config{
+		Store:          newMemoryStore(),
+		Secret:         "dev-secret-with-enough-test-entropy",
+		PasswordHasher: hasher,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := auth.API().SignUpEmail(ctx, SignUpEmailInput{Name: "Ada", Email: "real@example.com", Password: "correct-password"}); err != nil {
+		t.Fatal(err)
+	}
+	before := hasher.count()
+	_, _, err = auth.API().SignInEmail(ctx, SignInEmailInput{Email: "ghost@example.com", Password: "any-password"})
+	if !errors.Is(err, ErrInvalidCredentials) {
+		t.Fatalf("err = %v, want ErrInvalidCredentials", err)
+	}
+	if hasher.count() == before {
+		t.Fatal("no password verify ran for an unknown user; timing side channel remains")
+	}
+}
 
 // An untrusted callback host must not receive the one-time reset token.
 func TestPasswordResetDropsUntrustedCallbackURL(t *testing.T) {
