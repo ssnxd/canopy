@@ -29,6 +29,7 @@ Implemented today:
 - Provider access-token refresh API.
 - Two-factor authentication (TOTP) with backup codes.
 - Organizations, members, roles, and invitations.
+- Admin APIs: list and create users, set roles, ban and unban, list and revoke sessions, and impersonation.
 - Module system for optional features and plugins.
 - Audit logging interface.
 - Postgres store and in-memory store.
@@ -37,7 +38,7 @@ Implemented today:
 Not implemented yet:
 
 - Magic link and passkeys. These stay out of scope for v1.
-- Teams within organizations and admin APIs. These land in later v1 modules.
+- Teams within organizations. This lands in a later module.
 - First-party adapters for Gin, Echo, Chi, Gorilla, etc. `net/http` works with most routers directly.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
@@ -732,6 +733,40 @@ Endpoints (mounted under the auth handler, all require a session):
 Roles are `owner`, `admin`, and `member`. The default `Authorizer` maps roles to permissions. Set `Options.Authorizer` for custom access control. The owner cannot be removed and only an owner can change an owner.
 
 An invitation returns a token, which is its id. Your application delivers the invitation link to the invitee. The invitee accepts it while signed in with the invited email address. Read the active organization from `SessionData.Session.ActiveOrganizationID`.
+
+## Admin
+
+Add the admin module for administrator operations.
+
+```go
+import "github.com/ssnxd/canopy/admin"
+
+auth, err := canopy.New(canopy.Config{
+	Store:   store,
+	Secret:  os.Getenv("CANOPY_SECRET"),
+	Modules: []canopy.Module{
+		admin.New(admin.Options{AdminRoles: []string{"admin"}}),
+	},
+})
+```
+
+The store must implement `canopy.AdminStore`. The Postgres store and the in-memory store implement it.
+
+An `AdminAuthorizer` decides who is an admin. The default treats a user with the role `admin` as an administrator. Set a role with the admin API or with your own provisioning. Set `Options.Authorizer` for custom rules.
+
+Endpoints (mounted under the auth handler, all require an admin session unless noted):
+
+- `GET /admin/users?q=&limit=&offset=` — list users with a search and paging.
+- `POST /admin/create-user` — create a user with an email/password account.
+- `POST /admin/set-role` — set a user role.
+- `POST /admin/ban-user` — ban a user, with an optional reason and `expiresInSeconds`.
+- `POST /admin/unban-user` — remove a ban.
+- `GET /admin/user-sessions?userId=...` — list a user's sessions.
+- `POST /admin/revoke-user-sessions` — revoke all of a user's sessions.
+- `POST /admin/impersonate` — start a session as another user.
+- `POST /admin/stop-impersonating` — end impersonation and restore the admin. Requires an impersonation session, not an admin session.
+
+A ban takes effect at once. The module revokes the banned user's sessions, and the core rejects a banned user in `GetSession` and at sign-in. Impersonation records the admin on the session as `ImpersonatedBy`.
 
 ## Rate Limiting
 

@@ -411,6 +411,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "NOT_ORGANIZATION_MEMBER", "Not a member of the organization"
 	case errors.Is(err, ErrInvitationInvalid):
 		status, code, message = http.StatusBadRequest, "INVITATION_INVALID", "Invitation is invalid"
+	case errors.Is(err, ErrNotFound):
+		status, code, message = http.StatusNotFound, "NOT_FOUND", "Resource was not found"
 	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]string{

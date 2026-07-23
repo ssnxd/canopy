@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/ssnxd/canopy"
@@ -390,6 +391,56 @@ func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitat
 update organization_invitation set email=$2, role=$3, status=$4, expires_at=$5, updated_at=$6 where id=$1`,
 		invitation.ID, invitation.Email, invitation.Role, invitation.Status, invitation.ExpiresAt, invitation.UpdatedAt)
 	return mapRows(err, res)
+}
+
+func (s *Store) ListUsers(ctx context.Context, q canopy.UserQuery) ([]canopy.User, int, error) {
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	pattern := "%" + strings.ToLower(strings.TrimSpace(q.Search)) + "%"
+	var total int
+	if err := s.db.QueryRowContext(ctx, `
+select count(*) from "user" where lower(name) like $1 or lower(email) like $1`, pattern).Scan(&total); err != nil {
+		return nil, 0, mapErr(err)
+	}
+	rows, err := s.db.QueryContext(ctx, `
+select `+userColumns+` from "user"
+where lower(name) like $1 or lower(email) like $1
+order by created_at
+limit $2 offset $3`, pattern, limit, q.Offset)
+	if err != nil {
+		return nil, 0, mapErr(err)
+	}
+	defer rows.Close()
+	var users []canopy.User
+	for rows.Next() {
+		var u canopy.User
+		if err := rows.Scan(&u.ID, &u.Name, &u.Email, &u.EmailVerified, &u.Image, &u.Role, &u.Banned, &u.BanReason, &u.BanExpiresAt, &u.CreatedAt, &u.UpdatedAt); err != nil {
+			return nil, 0, mapErr(err)
+		}
+		users = append(users, u)
+	}
+	return users, total, mapErr(rows.Err())
+}
+
+func (s *Store) ListUserSessions(ctx context.Context, userID string) ([]canopy.Session, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, user_id, token, expires_at, ip_address, user_agent, active_organization_id, impersonated_by, created_at, updated_at
+from session where user_id=$1 order by created_at`, userID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var sessions []canopy.Session
+	for rows.Next() {
+		var se canopy.Session
+		if err := rows.Scan(&se.ID, &se.UserID, &se.Token, &se.ExpiresAt, &se.IPAddress, &se.UserAgent, &se.ActiveOrganizationID, &se.ImpersonatedBy, &se.CreatedAt, &se.UpdatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		sessions = append(sessions, se)
+	}
+	return sessions, mapErr(rows.Err())
 }
 
 func scanOrganization(row scanner) (*canopy.Organization, error) {

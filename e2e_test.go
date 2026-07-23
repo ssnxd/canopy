@@ -19,6 +19,7 @@ import (
 
 	_ "github.com/lib/pq"
 	"github.com/ssnxd/canopy"
+	"github.com/ssnxd/canopy/admin"
 	authoauth "github.com/ssnxd/canopy/oauth"
 	"github.com/ssnxd/canopy/organization"
 	"github.com/ssnxd/canopy/store/postgres"
@@ -340,6 +341,82 @@ func TestE2EOrganizationWithPostgres(t *testing.T) {
 	}
 	if len(membersBody.Members) != 2 {
 		t.Fatalf("members = %d, want 2", len(membersBody.Members))
+	}
+}
+
+func TestE2EAdminWithPostgres(t *testing.T) {
+	db := e2eDB(t)
+	store := postgres.New(db)
+	auth := e2eAuth(t, db, canopy.Config{
+		Modules: []canopy.Module{admin.New(admin.Options{})},
+	})
+	handler := auth.Handler()
+
+	adminCookie := e2eSignUp(t, handler, "Root", "root@example.com")
+	adminUser, err := store.FindUserByEmail(context.Background(), "root@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	adminUser.Role = "admin"
+	if err := store.UpdateUser(context.Background(), adminUser); err != nil {
+		t.Fatal(err)
+	}
+
+	e2eSignUp(t, handler, "Grace", "grace@example.com")
+	target, err := store.FindUserByEmail(context.Background(), "grace@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// List users.
+	listReq := httptest.NewRequest(http.MethodGet, "/admin/users?q=grace", nil)
+	listReq.AddCookie(adminCookie)
+	listRec := httptest.NewRecorder()
+	handler.ServeHTTP(listRec, listReq)
+	if listRec.Code != http.StatusOK {
+		t.Fatalf("list users status = %d, body = %s", listRec.Code, listRec.Body.String())
+	}
+	var listBody struct {
+		Users []canopy.User `json:"users"`
+		Total int           `json:"total"`
+	}
+	if err := json.NewDecoder(listRec.Body).Decode(&listBody); err != nil {
+		t.Fatal(err)
+	}
+	if listBody.Total != 1 || len(listBody.Users) != 1 {
+		t.Fatalf("search grace returned total=%d users=%d", listBody.Total, len(listBody.Users))
+	}
+
+	// Ban blocks sign-in; unban restores it.
+	ban := postJSON(t, handler, "/admin/ban-user", map[string]any{"userId": target.ID, "reason": "abuse"}, []*http.Cookie{adminCookie})
+	if ban.Code != http.StatusOK {
+		t.Fatalf("ban status = %d, body = %s", ban.Code, ban.Body.String())
+	}
+	blocked := postJSON(t, handler, "/sign-in/email", map[string]string{"email": "grace@example.com", "password": "correct-password"}, nil)
+	if blocked.Code != http.StatusForbidden {
+		t.Fatalf("banned sign-in status = %d, want 403", blocked.Code)
+	}
+	unban := postJSON(t, handler, "/admin/unban-user", map[string]string{"userId": target.ID}, []*http.Cookie{adminCookie})
+	if unban.Code != http.StatusOK {
+		t.Fatalf("unban status = %d, body = %s", unban.Code, unban.Body.String())
+	}
+
+	// Impersonate the target and stop.
+	imp := postJSON(t, handler, "/admin/impersonate", map[string]string{"userId": target.ID}, []*http.Cookie{adminCookie})
+	if imp.Code != http.StatusOK {
+		t.Fatalf("impersonate status = %d, body = %s", imp.Code, imp.Body.String())
+	}
+	impCookie := cookieNamed(t, imp.Result().Cookies(), "canopy.session_token")
+	stop := postJSON(t, handler, "/admin/stop-impersonating", nil, []*http.Cookie{impCookie})
+	if stop.Code != http.StatusOK {
+		t.Fatalf("stop status = %d, body = %s", stop.Code, stop.Body.String())
+	}
+	var restored canopy.SessionData
+	if err := json.NewDecoder(stop.Body).Decode(&restored); err != nil {
+		t.Fatal(err)
+	}
+	if restored.User.Email != "root@example.com" {
+		t.Fatalf("restored user = %q, want root", restored.User.Email)
 	}
 }
 

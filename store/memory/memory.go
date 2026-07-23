@@ -5,6 +5,7 @@ package memory
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -476,4 +477,43 @@ func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitat
 	cp := *invitation
 	s.invitations[invitation.ID] = &cp
 	return nil
+}
+
+func (s *Store) ListUsers(ctx context.Context, q canopy.UserQuery) ([]canopy.User, int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	search := strings.ToLower(strings.TrimSpace(q.Search))
+	var matched []canopy.User
+	for _, u := range s.users {
+		if search == "" || strings.Contains(strings.ToLower(u.Name), search) || strings.Contains(strings.ToLower(u.Email), search) {
+			matched = append(matched, *u)
+		}
+	}
+	sort.Slice(matched, func(i, j int) bool { return matched[i].CreatedAt.Before(matched[j].CreatedAt) })
+	total := len(matched)
+	limit := q.Limit
+	if limit <= 0 {
+		limit = 50
+	}
+	start := q.Offset
+	if start > total {
+		start = total
+	}
+	end := start + limit
+	if end > total {
+		end = total
+	}
+	return matched[start:end], total, nil
+}
+
+func (s *Store) ListUserSessions(ctx context.Context, userID string) ([]canopy.Session, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var sessions []canopy.Session
+	for _, se := range s.sessions {
+		if se.UserID == userID {
+			sessions = append(sessions, *se)
+		}
+	}
+	return sessions, nil
 }
