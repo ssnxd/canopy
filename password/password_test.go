@@ -27,3 +27,20 @@ func TestArgon2idHashVerifyAndRehash(t *testing.T) {
 		t.Fatalf("ok=%v needsRehash=%v, want valid hash needing rehash", ok, needsRehash)
 	}
 }
+
+func TestArgon2idRehashOnSaltLengthChange(t *testing.T) {
+	weak := &Argon2idHasher{Memory: 1024, Iterations: 1, Parallelism: 1, SaltLength: 8, KeyLength: 16}
+	hash, err := weak.Hash(context.Background(), "secret-pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Only the salt length changes. The rehash signal must still fire.
+	longerSalt := &Argon2idHasher{Memory: 1024, Iterations: 1, Parallelism: 1, SaltLength: 16, KeyLength: 16}
+	ok, needsRehash, err := longerSalt.Verify(context.Background(), "secret-pass", hash)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !ok || !needsRehash {
+		t.Fatalf("ok=%v needsRehash=%v, want valid hash needing rehash", ok, needsRehash)
+	}
+}

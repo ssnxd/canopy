@@ -96,6 +96,7 @@ func (h Argon2idHasher) equal(other Argon2idHasher) bool {
 	return h.Memory == other.Memory &&
 		h.Iterations == other.Iterations &&
 		h.Parallelism == other.Parallelism &&
+		h.SaltLength == other.SaltLength &&
 		h.KeyLength == other.KeyLength
 }
 
