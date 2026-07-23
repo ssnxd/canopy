@@ -30,6 +30,7 @@ func TestE2EEmailPasswordHTTPWithPostgres(t *testing.T) {
 	auth := e2eAuth(t, db, canopy.Config{
 		RequireEmailVerification: true,
 		EmailSender:              sender,
+		TrustedOrigins:           []string{"https://app.example.test"},
 	})
 	handler := auth.Handler()
 
@@ -134,7 +135,8 @@ func TestE2EOAuthHTTPWithPostgres(t *testing.T) {
 		accountID: "google-sub",
 	}
 	auth := e2eAuth(t, db, canopy.Config{
-		Providers: []authoauth.Provider{provider},
+		Providers:      []authoauth.Provider{provider},
+		TrustedOrigins: []string{"https://app.example.test"},
 	})
 	handler := auth.Handler()
 

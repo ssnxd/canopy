@@ -256,12 +256,13 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in RequestPasswordRe
 	if err != nil {
 		return err
 	}
+	callbackURL := s.cfg.resolveCallbackURL(in.CallbackURL)
 	message := PasswordResetMessage{
 		User:        *user,
 		Email:       user.Email,
 		Token:       token,
-		URL:         appendToken(in.CallbackURL, token),
-		CallbackURL: strings.TrimSpace(in.CallbackURL),
+		URL:         appendToken(callbackURL, token),
+		CallbackURL: callbackURL,
 		ExpiresAt:   expiresAt,
 	}
 	if err := s.cfg.EmailSender.SendPasswordReset(ctx, message); err != nil {
@@ -340,7 +341,7 @@ func (s *Service) SignInSocial(ctx context.Context, in SignInSocialInput) (*Sign
 		Provider:     provider.ID(),
 		Nonce:        nonce,
 		PKCEVerifier: pkce,
-		CallbackURL:  strings.TrimSpace(in.CallbackURL),
+		CallbackURL:  s.cfg.resolveCallbackURL(in.CallbackURL),
 		BindingHash:  hashString(binding),
 		RememberMe:   in.RememberMe,
 		IssuedAt:     time.Now().UTC(),
@@ -780,12 +781,13 @@ func (s *Service) sendEmailVerification(ctx context.Context, user User, callback
 	if err != nil {
 		return err
 	}
+	callbackURL = s.cfg.resolveCallbackURL(callbackURL)
 	message := EmailVerificationMessage{
 		User:        user,
 		Email:       user.Email,
 		Token:       token,
 		URL:         appendToken(callbackURL, token),
-		CallbackURL: strings.TrimSpace(callbackURL),
+		CallbackURL: callbackURL,
 		ExpiresAt:   expiresAt,
 	}
 	if err := s.cfg.EmailSender.SendEmailVerification(ctx, message); err != nil {

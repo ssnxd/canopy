@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/url"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/ssnxd/canopy/oauth"
@@ -195,5 +197,36 @@ func (c Config) CheckOrigin(r *http.Request) bool {
 	if origin == "" {
 		return true
 	}
+	return c.isTrustedOrigin(origin)
+}
+
+// isTrustedOrigin reports if origin is in the trusted origin list.
+func (c Config) isTrustedOrigin(origin string) bool {
 	return slices.Contains(c.TrustedOrigins, origin)
+}
+
+// resolveCallbackURL returns callbackURL only when it is safe to use.
+// It permits a relative path or a URL on a trusted origin.
+// It returns an empty string for an untrusted or invalid URL.
+// This prevents callback URLs from leaking one-time tokens to
+// attacker-controlled hosts and prevents open-redirect abuse.
+func (c Config) resolveCallbackURL(callbackURL string) string {
+	callbackURL = strings.TrimSpace(callbackURL)
+	if callbackURL == "" {
+		return ""
+	}
+	u, err := url.Parse(callbackURL)
+	if err != nil {
+		return ""
+	}
+	if u.Scheme == "" && u.Host == "" {
+		return callbackURL
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return ""
+	}
+	if c.isTrustedOrigin(u.Scheme + "://" + u.Host) {
+		return callbackURL
+	}
+	return ""
 }

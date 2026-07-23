@@ -695,6 +695,8 @@ Each message includes:
 
 `URL` is built by appending `?token=...` or `&token=...` to `CallbackURL`. If you prefer to build links yourself, use `Token` directly.
 
+Canopy validates `CallbackURL` before it builds the link. Canopy keeps a relative path or a URL on a trusted origin. Canopy drops any other URL and leaves `URL` and `CallbackURL` empty. `Token` stays available in that case. Add your web origin to `TrustedOrigins` to use absolute callback URLs. This prevents an attacker from delivering a one-time token to a host that they control.
+
 ```go
 type Mailer struct{}
 
@@ -889,6 +891,7 @@ Use `errors.Is(err, canopy.ErrInvalidCredentials)` rather than comparing error s
 - Server-side state replay prevention.
 - Signed one-time email verification tokens.
 - Signed one-time password reset tokens.
+- Callback and OAuth redirect URLs are limited to trusted origins.
 - Password reset revokes existing sessions.
 - Typed errors mapped to stable JSON codes.
 

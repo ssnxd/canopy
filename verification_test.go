@@ -29,6 +29,7 @@ func TestEmailVerificationFlow(t *testing.T) {
 		Secret:                   "dev-secret-with-enough-test-entropy",
 		RequireEmailVerification: true,
 		EmailSender:              sender,
+		TrustedOrigins:           []string{"https://app.example.test"},
 	})
 	if err != nil {
 		t.Fatal(err)
