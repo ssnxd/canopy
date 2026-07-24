@@ -5,7 +5,6 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"fmt"
-	"net"
 	"net/http"
 	"strconv"
 	"strings"
@@ -360,7 +359,7 @@ func (m *Module) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	}
 	data, token, err := m.core.IssueSession(r.Context(), *target, canopy.SessionOptions{
 		ImpersonatedBy: admin.User.ID,
-		IPAddress:      requestIP(r),
+		IPAddress:      m.core.ClientIP(r),
 		UserAgent:      r.UserAgent(),
 	})
 	if err != nil {
@@ -442,11 +441,4 @@ func newID(prefix string) (string, error) {
 		return "", err
 	}
 	return prefix + "_" + strings.ToLower(base64.RawURLEncoding.EncodeToString(buf)), nil
-}
-
-func requestIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

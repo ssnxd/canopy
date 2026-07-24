@@ -220,6 +220,30 @@ func (s *Service) Authenticate(r *http.Request) (*SessionData, error) {
 	return s.GetSession(r.Context(), requestToken(r, s.cfg.Session.CookieName))
 }
 
+// ClientIP returns the direct peer unless it is a configured trusted proxy.
+// For trusted proxies it walks X-Forwarded-For from right to left.
+func (s *Service) ClientIP(r *http.Request) string {
+	peer := remoteIP(r.RemoteAddr)
+	if peer == nil || !s.cfg.isTrustedProxy(peer) {
+		return ipString(peer, r.RemoteAddr)
+	}
+	forwarded := strings.Split(r.Header.Get("X-Forwarded-For"), ",")
+	for i := len(forwarded) - 1; i >= 0; i-- {
+		value := strings.TrimSpace(forwarded[i])
+		if value == "" {
+			continue
+		}
+		ip := net.ParseIP(value)
+		if ip == nil {
+			return peer.String()
+		}
+		if !s.cfg.isTrustedProxy(ip) {
+			return ip.String()
+		}
+	}
+	return peer.String()
+}
+
 // Audit emits an audit event. It satisfies the Core interface.
 func (s *Service) Audit(ctx context.Context, event AuditEvent) {
 	s.audit(ctx, event)
@@ -1221,10 +1245,33 @@ func validateEmailPassword(email, pass string, min, max int) error {
 	return nil
 }
 
-func requestIP(r *http.Request) string {
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
+func remoteIP(remoteAddr string) net.IP {
+	host, _, err := net.SplitHostPort(remoteAddr)
 	if err == nil {
-		return host
+		return net.ParseIP(host)
 	}
-	return r.RemoteAddr
+	return net.ParseIP(remoteAddr)
+}
+
+func ipString(ip net.IP, fallback string) string {
+	if ip == nil {
+		return fallback
+	}
+	return ip.String()
+}
+
+func (c Config) isTrustedProxy(ip net.IP) bool {
+	for _, value := range c.TrustedProxies {
+		if trusted := net.ParseIP(value); trusted != nil {
+			if trusted.Equal(ip) {
+				return true
+			}
+			continue
+		}
+		_, network, err := net.ParseCIDR(value)
+		if err == nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
 }

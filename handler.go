@@ -204,7 +204,7 @@ func (h *httpHandler) signUpEmail(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.IPAddress = requestIP(r)
+	req.IPAddress = h.api.ClientIP(r)
 	req.UserAgent = r.UserAgent()
 	data, token, err := h.api.SignUpEmail(r.Context(), req)
 	if err != nil {
@@ -220,7 +220,7 @@ func (h *httpHandler) signInEmail(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
-	req.IPAddress = requestIP(r)
+	req.IPAddress = h.api.ClientIP(r)
 	req.UserAgent = r.UserAgent()
 	result, err := h.api.SignInEmail(r.Context(), req)
 	if err != nil {
@@ -287,7 +287,7 @@ func (h *httpHandler) finishOAuthBrowserFlow(w http.ResponseWriter, r *http.Requ
 		Code:         code,
 		State:        state,
 		StateBinding: cookie.Value,
-		IPAddress:    requestIP(r),
+		IPAddress:    h.api.ClientIP(r),
 		UserAgent:    r.UserAgent(),
 	})
 }

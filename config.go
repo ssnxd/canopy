@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"slices"
@@ -114,6 +115,7 @@ type Config struct {
 	EmailSender              EmailSender
 	AccountLinkingPolicy     AccountLinkingPolicy
 	TrustedOrigins           []string
+	TrustedProxies           []string
 	DisableOriginCheck       bool
 	Providers                []oauth.Provider
 	OAuthStateTTL            time.Duration
@@ -237,6 +239,13 @@ func (c Config) validate() error {
 	for _, origin := range c.TrustedOrigins {
 		if !validOrigin(origin) {
 			return fmt.Errorf("canopy: invalid trusted origin %q", origin)
+		}
+	}
+	for _, proxy := range c.TrustedProxies {
+		if net.ParseIP(proxy) == nil {
+			if _, _, err := net.ParseCIDR(proxy); err != nil {
+				return fmt.Errorf("canopy: invalid trusted proxy %q", proxy)
+			}
 		}
 	}
 	seen := map[string]bool{}

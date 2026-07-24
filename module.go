@@ -22,6 +22,7 @@ type Core interface {
 	Config() RuntimeConfig
 	HashPassword(ctx context.Context, password string) (string, error)
 	ModuleKeys(purpose string) (ModuleKeyring, error)
+	ClientIP(r *http.Request) string
 	IssueSession(ctx context.Context, user User, opt SessionOptions) (*SessionData, string, error)
 	Authenticate(r *http.Request) (*SessionData, error)
 	Audit(ctx context.Context, event AuditEvent)

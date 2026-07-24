@@ -9,7 +9,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -310,7 +309,7 @@ func (m *Module) completeChallenge(w http.ResponseWriter, r *http.Request, useBa
 	}
 	data, token, err := m.core.IssueSession(r.Context(), *user, canopy.SessionOptions{
 		RememberMe: req.RememberMe,
-		IPAddress:  requestIP(r),
+		IPAddress:  m.core.ClientIP(r),
 		UserAgent:  r.UserAgent(),
 	})
 	if err != nil {
@@ -453,11 +452,4 @@ func normalizeBackupCode(code string) string {
 	code = strings.ReplaceAll(code, "-", "")
 	code = strings.ReplaceAll(code, " ", "")
 	return code
-}
-
-func requestIP(r *http.Request) string {
-	if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
-		return host
-	}
-	return r.RemoteAddr
 }

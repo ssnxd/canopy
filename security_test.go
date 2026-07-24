@@ -313,6 +313,42 @@ func TestAuthResponsesSetBrowserSecurityHeaders(t *testing.T) {
 	}
 }
 
+func TestClientIPOnlyTrustsConfiguredProxies(t *testing.T) {
+	auth, err := New(Config{
+		Store:          newMemoryStore(),
+		Secret:         "dev-secret-with-enough-test-entropy",
+		TrustedProxies: []string{"10.0.0.0/8"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, "/", nil)
+	req.RemoteAddr = "192.0.2.10:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20")
+	if got := auth.API().ClientIP(req); got != "192.0.2.10" {
+		t.Fatalf("untrusted peer client IP = %q, want direct peer", got)
+	}
+	req.RemoteAddr = "10.0.0.1:1234"
+	req.Header.Set("X-Forwarded-For", "203.0.113.20, 10.0.0.2")
+	if got := auth.API().ClientIP(req); got != "203.0.113.20" {
+		t.Fatalf("trusted proxy client IP = %q, want forwarded client", got)
+	}
+	req.Header.Set("X-Forwarded-For", "not-an-ip")
+	if got := auth.API().ClientIP(req); got != "10.0.0.1" {
+		t.Fatalf("malformed forwarded client IP = %q, want proxy peer", got)
+	}
+}
+
+func TestConfigRejectsInvalidTrustedProxy(t *testing.T) {
+	if _, err := New(Config{
+		Store:          newMemoryStore(),
+		Secret:         "dev-secret-with-enough-test-entropy",
+		TrustedProxies: []string{"not-a-network"},
+	}); err == nil {
+		t.Fatal("New() accepted an invalid trusted proxy")
+	}
+}
+
 func TestOAuthFormCallbackBodyIsSizeLimited(t *testing.T) {
 	provider := &fakeOAuthProvider{id: "google"}
 	auth, err := New(Config{
