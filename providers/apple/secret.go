@@ -3,6 +3,7 @@ package apple
 import (
 	"context"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/x509"
@@ -40,8 +41,8 @@ func NewJWTClientSecretSource(teamID, clientID, keyID string, privateKeyPEM []by
 		return nil, err
 	}
 	ecKey, ok := key.(*ecdsa.PrivateKey)
-	if !ok || ecKey.Curve == nil {
-		return nil, fmt.Errorf("apple: private key must be ECDSA")
+	if !ok || ecKey.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("apple: private key must use the P-256 curve")
 	}
 	return &JWTClientSecretSource{
 		TeamID:     teamID,
@@ -56,13 +57,19 @@ func (s *JWTClientSecretSource) ClientSecret(ctx context.Context) (string, error
 	if s.TeamID == "" || s.ClientID == "" || s.KeyID == "" || s.PrivateKey == nil {
 		return "", fmt.Errorf("apple: team id, client id, key id, and private key are required")
 	}
+	if s.PrivateKey.Curve != elliptic.P256() {
+		return "", fmt.Errorf("apple: private key must use the P-256 curve")
+	}
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
 	now := time.Now().UTC()
 	if s.Now != nil {
 		now = s.Now().UTC()
 	}
 	lifetime := s.Lifetime
-	if lifetime == 0 || lifetime > maxClientSecretLifetime {
-		lifetime = maxClientSecretLifetime
+	if lifetime <= 0 || lifetime > maxClientSecretLifetime {
+		return "", fmt.Errorf("apple: lifetime must be between 1ns and %s", maxClientSecretLifetime)
 	}
 	header := map[string]string{
 		"alg": "ES256",
