@@ -171,7 +171,7 @@ func (m *Module) handleCreateUser(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrConflict)
 		return
 	}
-	hash, err := cfg.PasswordHasher.Hash(r.Context(), req.Password)
+	hash, err := m.core.HashPassword(r.Context(), req.Password)
 	if err != nil {
 		canopy.WriteError(w, err)
 		return

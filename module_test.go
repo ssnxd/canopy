@@ -1,9 +1,11 @@
 package canopy
 
 import (
+	"bytes"
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 )
 
@@ -70,6 +72,40 @@ func TestModuleInitRunsAndReadsStoreCapability(t *testing.T) {
 	}
 	if !m.sawStoreOK {
 		t.Fatal("module could not read the store capability")
+	}
+}
+
+func TestModuleCoreDoesNotExposeRootConfiguration(t *testing.T) {
+	auth, err := New(Config{
+		Store:           newMemoryStore(),
+		Secret:          "current-production-secret-with-enough-entropy",
+		PreviousSecrets: []string{"previous-production-secret-with-enough-entropy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeType := reflect.TypeOf(auth.API().Config())
+	for _, field := range []string{"Secret", "PreviousSecrets", "Store", "Hooks", "Providers"} {
+		if _, ok := runtimeType.FieldByName(field); ok {
+			t.Fatalf("runtime config exposes sensitive field %q", field)
+		}
+	}
+	first, err := (moduleCore{Service: auth.API(), moduleID: "first"}).ModuleKeys("state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := (moduleCore{Service: auth.API(), moduleID: "second"}).ModuleKeys("state")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first.Current) != 32 || len(first.Previous) != 1 {
+		t.Fatalf("first keyring sizes = (%d, %d), want (32, 1)", len(first.Current), len(first.Previous))
+	}
+	if bytes.Equal(first.Current, second.Current) {
+		t.Fatal("different modules received the same derived key")
+	}
+	if bytes.Equal(first.Current, []byte("current-production-secret-with-enough-entropy")) {
+		t.Fatal("module key exposes the root secret")
 	}
 }
 

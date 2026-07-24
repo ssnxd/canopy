@@ -68,26 +68,23 @@ func (m *Module) Init(core canopy.Core) error {
 	if !ok {
 		return fmt.Errorf("two-factor: store does not implement canopy.TwoFactorStore")
 	}
-	secret := core.Config().Secret
 	if m.codec == nil {
-		codec, err := NewRotatingSecretCodec(secret, core.Config().PreviousSecrets...)
+		keys, err := core.ModuleKeys("secret")
+		if err != nil {
+			return err
+		}
+		codec, err := NewSecretCodecFromKeys(keys.Current, keys.Previous...)
 		if err != nil {
 			return err
 		}
 		m.codec = codec
 	}
-	key, err := deriveKey(secret, "canopy/two-factor/challenge")
+	challengeKeys, err := core.ModuleKeys("challenge")
 	if err != nil {
 		return err
 	}
-	m.chKey = key
-	for _, previous := range core.Config().PreviousSecrets {
-		key, err := deriveKey(previous, "canopy/two-factor/challenge")
-		if err != nil {
-			return err
-		}
-		m.oldChKeys = append(m.oldChKeys, key)
-	}
+	m.chKey = challengeKeys.Current
+	m.oldChKeys = challengeKeys.Previous
 	m.core = core
 	m.store = store
 	if m.authenticator == nil {

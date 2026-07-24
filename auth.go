@@ -18,7 +18,8 @@ func New(config Config) (*Auth, error) {
 	a := &Auth{cfg: config}
 	a.api = newService(config)
 	for _, module := range config.Modules {
-		if err := module.Init(a.api); err != nil {
+		core := moduleCore{Service: a.api, moduleID: module.ID()}
+		if err := module.Init(core); err != nil {
 			return nil, fmt.Errorf("canopy: module %q: %w", module.ID(), err)
 		}
 	}

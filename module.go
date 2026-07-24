@@ -3,6 +3,8 @@ package canopy
 import (
 	"context"
 	"net/http"
+
+	"github.com/ssnxd/canopy/sessions"
 )
 
 // Module is an optional feature that plugs into the Canopy handler and
@@ -17,10 +19,28 @@ type Module interface {
 // depend on the concrete Service type.
 type Core interface {
 	Store() Store
-	Config() Config
+	Config() RuntimeConfig
+	HashPassword(ctx context.Context, password string) (string, error)
+	ModuleKeys(purpose string) (ModuleKeyring, error)
 	IssueSession(ctx context.Context, user User, opt SessionOptions) (*SessionData, string, error)
 	Authenticate(r *http.Request) (*SessionData, error)
 	Audit(ctx context.Context, event AuditEvent)
+}
+
+// RuntimeConfig contains the non-secret settings exposed to modules.
+type RuntimeConfig struct {
+	Environment       Environment
+	BasePath          string
+	PasswordMinLength int
+	PasswordMaxLength int
+	Session           sessions.Config
+}
+
+// ModuleKeyring contains purpose-separated keys for one module. Current is
+// used for new data; Previous accepts data created before a key rotation.
+type ModuleKeyring struct {
+	Current  []byte
+	Previous [][]byte
 }
 
 // RouteModule is a module that mounts HTTP routes under the handler.

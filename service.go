@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -15,6 +17,7 @@ import (
 	"time"
 
 	"github.com/ssnxd/canopy/oauth"
+	"golang.org/x/crypto/hkdf"
 	xoauth2 "golang.org/x/oauth2"
 )
 
@@ -163,8 +166,53 @@ func newService(cfg Config) *Service {
 // Store returns the configured store. It satisfies the Core interface.
 func (s *Service) Store() Store { return s.cfg.Store }
 
-// Config returns the configuration. It satisfies the Core interface.
-func (s *Service) Config() Config { return s.cfg }
+// Config returns the non-secret runtime configuration exposed to modules.
+func (s *Service) Config() RuntimeConfig {
+	return RuntimeConfig{
+		Environment:       s.cfg.Environment,
+		BasePath:          s.cfg.BasePath,
+		PasswordMinLength: s.cfg.PasswordMinLength,
+		PasswordMaxLength: s.cfg.PasswordMaxLength,
+		Session:           s.cfg.Session,
+	}
+}
+
+// HashPassword hashes a password with the configured hasher.
+func (s *Service) HashPassword(ctx context.Context, value string) (string, error) {
+	return s.cfg.PasswordHasher.Hash(ctx, value)
+}
+
+type moduleCore struct {
+	*Service
+	moduleID string
+}
+
+func (c moduleCore) ModuleKeys(purpose string) (ModuleKeyring, error) {
+	if purpose == "" || strings.ContainsAny(purpose, "\x00\r\n") {
+		return ModuleKeyring{}, fmt.Errorf("canopy: module key purpose is required")
+	}
+	derive := func(secret string) ([]byte, error) {
+		key := make([]byte, 32)
+		label := "canopy/" + c.moduleID + "/" + purpose
+		if _, err := io.ReadFull(hkdf.New(sha256.New, []byte(secret), nil, []byte(label)), key); err != nil {
+			return nil, err
+		}
+		return key, nil
+	}
+	current, err := derive(c.cfg.Secret)
+	if err != nil {
+		return ModuleKeyring{}, err
+	}
+	keys := ModuleKeyring{Current: current}
+	for _, secret := range c.cfg.PreviousSecrets {
+		key, err := derive(secret)
+		if err != nil {
+			return ModuleKeyring{}, err
+		}
+		keys.Previous = append(keys.Previous, key)
+	}
+	return keys, nil
+}
 
 // Authenticate resolves the session for a request. It reads the bearer
 // token or the session cookie. It satisfies the Core interface.

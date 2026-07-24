@@ -39,16 +39,34 @@ func NewRotatingSecretCodec(secret string, previousSecrets ...string) (*SecretCo
 	if secret == "" {
 		return nil, fmt.Errorf("two-factor: secret is required to derive the codec key")
 	}
-	current, err := secretAEAD(secret)
+	current, err := deriveKey(secret, "canopy/two-factor/secret")
 	if err != nil {
 		return nil, err
 	}
-	codec := &SecretCodec{current: current}
+	var previousKeys [][]byte
 	for _, previous := range previousSecrets {
 		if previous == "" {
 			return nil, fmt.Errorf("two-factor: previous secrets must not be empty")
 		}
-		aead, err := secretAEAD(previous)
+		key, err := deriveKey(previous, "canopy/two-factor/secret")
+		if err != nil {
+			return nil, err
+		}
+		previousKeys = append(previousKeys, key)
+	}
+	return NewSecretCodecFromKeys(current, previousKeys...)
+}
+
+// NewSecretCodecFromKeys constructs a codec from AES-256 keys obtained from
+// Core.ModuleKeys.
+func NewSecretCodecFromKeys(current []byte, previous ...[]byte) (*SecretCodec, error) {
+	currentAEAD, err := secretAEAD(current)
+	if err != nil {
+		return nil, err
+	}
+	codec := &SecretCodec{current: currentAEAD}
+	for _, key := range previous {
+		aead, err := secretAEAD(key)
 		if err != nil {
 			return nil, err
 		}
@@ -57,10 +75,9 @@ func NewRotatingSecretCodec(secret string, previousSecrets ...string) (*SecretCo
 	return codec, nil
 }
 
-func secretAEAD(secret string) (cipher.AEAD, error) {
-	key, err := deriveKey(secret, "canopy/two-factor/secret")
-	if err != nil {
-		return nil, err
+func secretAEAD(key []byte) (cipher.AEAD, error) {
+	if len(key) != 32 {
+		return nil, fmt.Errorf("two-factor: codec key must be 32 bytes")
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
