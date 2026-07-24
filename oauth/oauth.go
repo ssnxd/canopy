@@ -38,3 +38,9 @@ type Provider interface {
 	Refresh(ctx context.Context, refreshToken string) (*oauth2.Token, error)
 	Profile(ctx context.Context, token *oauth2.Token, nonce string) (*Profile, error)
 }
+
+// Validator is an optional provider capability used by canopy.New to reject
+// incomplete provider configuration before serving requests.
+type Validator interface {
+	Validate() error
+}

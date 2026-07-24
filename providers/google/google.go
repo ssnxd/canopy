@@ -3,6 +3,8 @@ package google
 import (
 	"context"
 	"fmt"
+	"net/url"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -20,7 +22,24 @@ type Provider struct {
 
 func (p Provider) ID() string { return "google" }
 
+func (p Provider) Validate() error {
+	if p.ClientID == "" || p.ClientSecret == "" {
+		return fmt.Errorf("google: client id and client secret are required")
+	}
+	redirect, err := url.Parse(p.RedirectURL)
+	if err != nil || redirect.Host == "" || (redirect.Scheme != "https" && redirect.Scheme != "http") {
+		return fmt.Errorf("google: redirect URL must be an absolute HTTP(S) URL")
+	}
+	if len(p.Scopes) > 0 && !slices.Contains(p.Scopes, "openid") {
+		return fmt.Errorf("google: custom scopes must include openid")
+	}
+	return nil
+}
+
 func (p Provider) Config(ctx context.Context) (*oauth2.Config, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
 	scopes := p.Scopes
 	if len(scopes) == 0 {
 		scopes = []string{"openid", "email", "profile"}
@@ -70,7 +89,7 @@ func (p Provider) Profile(ctx context.Context, token *oauth2.Token, nonce string
 	if !ok || rawIDToken == "" {
 		return nil, fmt.Errorf("google: missing id_token")
 	}
-	issuer, err := oidc.NewProvider(ctx, "https://accounts.google.com")
+	issuer, err := oauth.DiscoverProvider(ctx, "https://accounts.google.com")
 	if err != nil {
 		return nil, err
 	}

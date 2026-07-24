@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/url"
+	"slices"
 	"time"
 
 	"github.com/coreos/go-oidc/v3/oidc"
@@ -30,13 +32,33 @@ type Provider struct {
 
 func (p Provider) ID() string { return "apple" }
 
-func (p Provider) Config(ctx context.Context) (*oauth2.Config, error) {
+func (p Provider) Validate() error {
+	if p.ClientID == "" {
+		return fmt.Errorf("apple: client id is required")
+	}
+	redirect, err := url.Parse(p.RedirectURL)
+	if err != nil || redirect.Host == "" || (redirect.Scheme != "https" && redirect.Scheme != "http") {
+		return fmt.Errorf("apple: redirect URL must be an absolute HTTP(S) URL")
+	}
 	if p.SecretSource == nil {
-		return nil, fmt.Errorf("apple: client secret source is required")
+		return fmt.Errorf("apple: client secret source is required")
+	}
+	if len(p.Scopes) > 0 && !slices.Contains(p.Scopes, "openid") {
+		return fmt.Errorf("apple: custom scopes must include openid")
+	}
+	return nil
+}
+
+func (p Provider) Config(ctx context.Context) (*oauth2.Config, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
 	}
 	secret, err := p.SecretSource.ClientSecret(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if secret == "" {
+		return nil, fmt.Errorf("apple: client secret source returned an empty secret")
 	}
 	scopes := p.Scopes
 	if len(scopes) == 0 {
@@ -90,7 +112,7 @@ func (p Provider) Profile(ctx context.Context, token *oauth2.Token, nonce string
 	if !ok || rawIDToken == "" {
 		return nil, fmt.Errorf("apple: missing id_token")
 	}
-	issuer, err := oidc.NewProvider(ctx, "https://appleid.apple.com")
+	issuer, err := oauth.DiscoverProvider(ctx, "https://appleid.apple.com")
 	if err != nil {
 		return nil, err
 	}

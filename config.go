@@ -253,6 +253,11 @@ func (c Config) validate() error {
 		if seen[provider.ID()] {
 			return fmt.Errorf("canopy: duplicate oauth provider %q", provider.ID())
 		}
+		if validator, ok := provider.(oauth.Validator); ok {
+			if err := validator.Validate(); err != nil {
+				return fmt.Errorf("canopy: oauth provider %q: %w", provider.ID(), err)
+			}
+		}
 		seen[provider.ID()] = true
 	}
 	moduleSeen := map[string]bool{}
