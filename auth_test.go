@@ -306,6 +306,37 @@ func TestMiddlewareAcceptsBearerToken(t *testing.T) {
 	}
 }
 
+func TestExplicitSessionMiddlewareSemantics(t *testing.T) {
+	auth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	optionalCalled := false
+	optional := auth.OptionalSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		optionalCalled = true
+		if _, ok := SessionFromContext(r.Context()); ok {
+			t.Error("anonymous optional request had a session")
+		}
+	}))
+	optional.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+	if !optionalCalled {
+		t.Fatal("OptionalSession did not continue anonymously")
+	}
+
+	requiredCalled := false
+	required := auth.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requiredCalled = true
+	}))
+	rec := httptest.NewRecorder()
+	required.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusUnauthorized || requiredCalled {
+		t.Fatalf("RequireSession status=%d called=%v, want 401 without next", rec.Code, requiredCalled)
+	}
+}
+
 func TestSignUpUsesAtomicUserAccountProvisioningWhenAvailable(t *testing.T) {
 	wantErr := errors.New("provision failed")
 	store := &failingProvisionStore{

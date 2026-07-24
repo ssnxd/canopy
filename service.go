@@ -831,13 +831,34 @@ func (s *Service) RevokeUserSessions(ctx context.Context, userID string) error {
 	return s.cfg.Store.DeleteUserSessions(ctx, userID)
 }
 
+// Middleware is a deprecated alias for OptionalSession.
+// Deprecated: use OptionalSession or RequireSession to make intent explicit.
 func (s *Service) Middleware(next http.Handler) http.Handler {
+	return s.OptionalSession(next)
+}
+
+// OptionalSession resolves a session when present and always calls next.
+func (s *Service) OptionalSession(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		token := requestToken(r, s.cfg.Session.CookieName)
 		if data, sessionErr := s.GetSession(r.Context(), token); sessionErr == nil {
 			r = r.WithContext(ContextWithSession(r.Context(), data))
 		}
 		next.ServeHTTP(w, r)
+	})
+}
+
+// RequireSession resolves a session and returns unauthorized without calling
+// next when credentials are missing or invalid.
+func (s *Service) RequireSession(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := requestToken(r, s.cfg.Session.CookieName)
+		data, err := s.GetSession(r.Context(), token)
+		if err != nil {
+			writeError(w, ErrUnauthorized)
+			return
+		}
+		next.ServeHTTP(w, r.WithContext(ContextWithSession(r.Context(), data)))
 	})
 }
 

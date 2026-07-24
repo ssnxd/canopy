@@ -34,6 +34,20 @@ func (a *Auth) Handler() http.Handler {
 	return newHandler(a.api, a.cfg)
 }
 
+// Middleware is a deprecated alias for OptionalSession.
+// Deprecated: use OptionalSession or RequireSession to make intent explicit.
 func (a *Auth) Middleware(next http.Handler) http.Handler {
-	return a.api.Middleware(next)
+	return a.OptionalSession(next)
+}
+
+// OptionalSession adds session data to the request context when valid and
+// continues anonymously otherwise.
+func (a *Auth) OptionalSession(next http.Handler) http.Handler {
+	return a.api.OptionalSession(next)
+}
+
+// RequireSession adds session data to the request context or returns a 401
+// JSON error without calling next.
+func (a *Auth) RequireSession(next http.Handler) http.Handler {
+	return a.api.RequireSession(next)
 }
