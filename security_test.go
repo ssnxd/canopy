@@ -276,6 +276,63 @@ func TestRequestBodyIsSizeLimited(t *testing.T) {
 	}
 }
 
+func TestJSONRequestRejectsTrailingValues(t *testing.T) {
+	store := newMemoryStore()
+	auth, err := New(Config{Store: store, Secret: "dev-secret-with-enough-test-entropy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"name":"Ada","email":"ada@example.com","password":"correct-password"} {}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-up/email", bytes.NewReader(body))
+	auth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("trailing JSON status = %d, want 400", rec.Code)
+	}
+	if _, err := store.FindUserByEmail(context.Background(), "ada@example.com"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("request with trailing JSON created a user: %v", err)
+	}
+}
+
+func TestAuthResponsesSetBrowserSecurityHeaders(t *testing.T) {
+	auth, err := New(Config{Store: newMemoryStore(), Secret: "dev-secret-with-enough-test-entropy"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := httptest.NewRecorder()
+	auth.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/get-session", nil))
+	for name, want := range map[string]string{
+		"Cache-Control":          "no-store",
+		"Pragma":                 "no-cache",
+		"Referrer-Policy":        "no-referrer",
+		"X-Content-Type-Options": "nosniff",
+	} {
+		if got := rec.Header().Get(name); got != want {
+			t.Errorf("%s = %q, want %q", name, got, want)
+		}
+	}
+}
+
+func TestOAuthFormCallbackBodyIsSizeLimited(t *testing.T) {
+	provider := &fakeOAuthProvider{id: "google"}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := "state=state&code=" + strings.Repeat("a", maxRequestBodyBytes)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/callback/google", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	auth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("oversize callback status = %d, want 400", rec.Code)
+	}
+}
+
 // The OAuth redirect target must not be an untrusted host (open-redirect guard).
 func TestOAuthDropsUntrustedRedirect(t *testing.T) {
 	provider := &fakeOAuthProvider{id: "google", email: "oauth@example.com", accountID: "google-sub"}

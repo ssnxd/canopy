@@ -3,6 +3,7 @@ package canopy
 import (
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -168,7 +169,7 @@ func (h *httpHandler) signInSocial(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) oauthCallback(w http.ResponseWriter, r *http.Request) {
-	out, err := h.finishOAuthBrowserFlow(r)
+	out, err := h.finishOAuthBrowserFlow(w, r)
 	if err != nil {
 		writeError(w, err)
 		return
@@ -187,6 +188,10 @@ func (h *httpHandler) oauthCallback(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("Pragma", "no-cache")
+	w.Header().Set("Referrer-Policy", "no-referrer")
+	w.Header().Set("X-Content-Type-Options", "nosniff")
 	if !h.cfg.CheckOrigin(r) {
 		writeError(w, ErrUnauthorized)
 		return
@@ -262,10 +267,14 @@ func (h *httpHandler) sessionFromRequest(r *http.Request) (*requestSession, erro
 	return &requestSession{Data: data, Token: token}, nil
 }
 
-func (h *httpHandler) finishOAuthBrowserFlow(r *http.Request) (*OAuthCallbackResult, error) {
+func (h *httpHandler) finishOAuthBrowserFlow(w http.ResponseWriter, r *http.Request) (*OAuthCallbackResult, error) {
+	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
+	if err := r.ParseForm(); err != nil {
+		return nil, ErrInvalidInput
+	}
 	provider := r.PathValue("provider")
-	state := r.FormValue("state")
-	code := r.FormValue("code")
+	state := r.Form.Get("state")
+	code := r.Form.Get("code")
 	if provider == "" || state == "" || code == "" {
 		return nil, ErrInvalidInput
 	}
@@ -340,6 +349,10 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
+		writeError(w, ErrInvalidInput)
+		return false
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		writeError(w, ErrInvalidInput)
 		return false
 	}

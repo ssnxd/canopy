@@ -3,9 +3,24 @@ package canopy
 import (
 	"context"
 	"errors"
+	"net/url"
 	"testing"
 	"time"
 )
+
+func TestAppendTokenPreservesQueryAndFragment(t *testing.T) {
+	got := appendToken("https://app.example.test/verify?language=en#confirm", "a+b&c")
+	parsed, err := url.Parse(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if parsed.Query().Get("language") != "en" || parsed.Query().Get("token") != "a+b&c" {
+		t.Fatalf("callback query = %q", parsed.RawQuery)
+	}
+	if parsed.Fragment != "confirm" {
+		t.Fatalf("callback fragment = %q, want confirm", parsed.Fragment)
+	}
+}
 
 type testEmailSender struct {
 	verificationMessages []EmailVerificationMessage

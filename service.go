@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -1107,11 +1108,14 @@ func appendToken(callbackURL, token string) string {
 	if callbackURL == "" {
 		return ""
 	}
-	sep := "?"
-	if strings.Contains(callbackURL, "?") {
-		sep = "&"
+	parsed, err := url.Parse(callbackURL)
+	if err != nil {
+		return ""
 	}
-	return callbackURL + sep + "token=" + token
+	query := parsed.Query()
+	query.Set("token", token)
+	parsed.RawQuery = query.Encode()
+	return parsed.String()
 }
 
 func updateAccountFromProfile(account *Account, profile *oauth.Profile) {
