@@ -6,7 +6,7 @@ GO_VET := GOCACHE="$(GOCACHE)" go vet
 CANOPY_E2E_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/canopy_test?sslmode=disable
 export CANOPY_E2E_DATABASE_URL
 
-.PHONY: help test test-unit unit test-e2e e2e test-all vet release-check release go-release check-e2e-db check-goreleaser check-github-token check-clean check-tag
+.PHONY: help test test-unit unit test-e2e e2e test-all test-race fmt-check vet vuln ci release-check release go-release check-e2e-db check-goreleaser check-github-token check-clean check-tag
 
 help:
 	@printf '%s\n' 'Targets:'
@@ -14,7 +14,11 @@ help:
 	@printf '  %-16s %s\n' 'test-unit' 'Run unit tests'
 	@printf '  %-16s %s\n' 'test-e2e' 'Run Postgres-backed e2e tests'
 	@printf '  %-16s %s\n' 'test-all' 'Run unit and e2e tests'
+	@printf '  %-16s %s\n' 'test-race' 'Run unit tests with the race detector'
+	@printf '  %-16s %s\n' 'fmt-check' 'Check Go formatting'
 	@printf '  %-16s %s\n' 'vet' 'Run go vet'
+	@printf '  %-16s %s\n' 'vuln' 'Run govulncheck'
+	@printf '  %-16s %s\n' 'ci' 'Run formatting, race, vet, and vulnerability checks'
 	@printf '  %-16s %s\n' 'release-check' 'Run release validation without publishing'
 	@printf '  %-16s %s\n' 'release' 'Publish the current v* tag with GoReleaser'
 
@@ -32,10 +36,25 @@ test-e2e: check-e2e-db
 
 test-all: test-unit test-e2e
 
+test-race:
+	$(GO_TEST) -race ./...
+
+fmt-check:
+	@test -z "$$(gofmt -l $$(git ls-files '*.go'))" || { \
+		printf '%s\n' 'The following Go files need gofmt:' >&2; \
+		gofmt -l $$(git ls-files '*.go') >&2; \
+		exit 1; \
+	}
+
 vet:
 	$(GO_VET) ./...
 
-release-check: test-all vet check-goreleaser
+vuln:
+	GOCACHE="$(GOCACHE)" go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
+
+ci: fmt-check test-race vet vuln
+
+release-check: test-all ci check-goreleaser
 	goreleaser check
 	goreleaser release --snapshot --clean
 
@@ -54,7 +73,7 @@ check-e2e-db:
 check-goreleaser:
 	@command -v goreleaser >/dev/null 2>&1 || { \
 		printf '%s\n' 'goreleaser is required for this target.' >&2; \
-		printf '%s\n' 'Install with: go install github.com/goreleaser/goreleaser/v2@latest' >&2; \
+		printf '%s\n' 'Install with: go install github.com/goreleaser/goreleaser/v2@v2.17.0' >&2; \
 		exit 1; \
 	}
 
