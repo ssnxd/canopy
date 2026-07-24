@@ -69,6 +69,39 @@ func TestConfigRequiresEmailSenderForRequiredVerification(t *testing.T) {
 	}
 }
 
+func TestHTTPErrorEnvelopeUsesStableTypedCodes(t *testing.T) {
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{name: "invalid input", err: ErrInvalidInput, status: http.StatusBadRequest, code: "INVALID_INPUT"},
+		{name: "invalid state", err: ErrInvalidState, status: http.StatusBadRequest, code: "INVALID_STATE"},
+		{name: "storage failure", err: ErrStorageFailure, status: http.StatusInternalServerError, code: "STORAGE_FAILURE"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			writeError(rec, test.err)
+			if rec.Code != test.status {
+				t.Fatalf("status = %d, want %d", rec.Code, test.status)
+			}
+			var body struct {
+				Error struct {
+					Code string `json:"code"`
+				} `json:"error"`
+			}
+			if err := json.NewDecoder(rec.Body).Decode(&body); err != nil {
+				t.Fatal(err)
+			}
+			if body.Error.Code != test.code {
+				t.Fatalf("code = %q, want %q", body.Error.Code, test.code)
+			}
+		})
+	}
+}
+
 func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	store := newMemoryStore()
 	audit := &testAuditLogger{}

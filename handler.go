@@ -388,6 +388,10 @@ func writeError(w http.ResponseWriter, err error) {
 	code := "BAD_REQUEST"
 	message := "Invalid request"
 	switch {
+	case errors.Is(err, ErrInvalidInput):
+		status, code, message = http.StatusBadRequest, "INVALID_INPUT", "Invalid input"
+	case errors.Is(err, ErrInvalidState):
+		status, code, message = http.StatusBadRequest, "INVALID_STATE", "Invalid state"
 	case errors.Is(err, ErrInvalidCredentials):
 		status, code, message = http.StatusUnauthorized, "INVALID_CREDENTIALS", "Invalid email or password"
 	case errors.Is(err, ErrInvalidToken):
@@ -428,6 +432,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusBadRequest, "INVITATION_INVALID", "Invitation is invalid"
 	case errors.Is(err, ErrNotFound):
 		status, code, message = http.StatusNotFound, "NOT_FOUND", "Resource was not found"
+	case errors.Is(err, ErrStorageFailure):
+		status, code, message = http.StatusInternalServerError, "STORAGE_FAILURE", "Storage operation failed"
 	}
 	writeJSON(w, status, map[string]any{
 		"error": map[string]string{

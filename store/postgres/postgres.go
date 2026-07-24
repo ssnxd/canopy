@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lib/pq"
 	"github.com/ssnxd/canopy"
 	"github.com/ssnxd/canopy/sessions"
 )
@@ -22,7 +23,7 @@ func New(db *sql.DB) *Store {
 
 func (s *Store) Migrate(ctx context.Context) error {
 	_, err := s.db.ExecContext(ctx, Migration)
-	return err
+	return mapErr(err)
 }
 
 const userColumns = `id, name, email, email_verified, image, role, banned, ban_reason, ban_expires_at, created_at, updated_at`
@@ -61,7 +62,7 @@ func (s *Store) CreateUser(ctx context.Context, u *canopy.User) error {
 func (s *Store) CreateUserAccount(ctx context.Context, u *canopy.User, a *canopy.Account) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return mapErr(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, userInsert, userInsertArgs(u)...); err != nil {
@@ -76,7 +77,7 @@ insert into account (
 		a.RefreshTokenExpiresAt, a.Scope, a.IDToken, a.Password, a.CreatedAt, a.UpdatedAt); err != nil {
 		return mapErr(err)
 	}
-	return tx.Commit()
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) UpdateUser(ctx context.Context, u *canopy.User) error {
@@ -173,7 +174,7 @@ values ($1,$2,$3,$4,$5,$6)`, v.ID, v.Identifier, v.Value, v.ExpiresAt, v.Created
 func (s *Store) ReplaceVerification(ctx context.Context, v *canopy.Verification) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return mapErr(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `delete from verification where identifier=$1`, v.Identifier); err != nil {
@@ -184,13 +185,13 @@ func (s *Store) ReplaceVerification(ctx context.Context, v *canopy.Verification)
 	values ($1,$2,$3,$4,$5,$6)`, v.ID, v.Identifier, v.Value, v.ExpiresAt, v.CreatedAt, v.UpdatedAt); err != nil {
 		return mapErr(err)
 	}
-	return tx.Commit()
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*canopy.Verification, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return nil, err
+		return nil, mapErr(err)
 	}
 	defer tx.Rollback()
 	row := tx.QueryRowContext(ctx, `
@@ -202,7 +203,7 @@ returning id, identifier, value, expires_at, created_at, updated_at`, identifier
 		return nil, mapErr(err)
 	}
 	if err := tx.Commit(); err != nil {
-		return nil, err
+		return nil, mapErr(err)
 	}
 	return &v, nil
 }
@@ -228,7 +229,7 @@ func (s *Store) ApplyPasswordReset(
 ) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return mapErr(err)
 	}
 	defer tx.Rollback()
 	var verificationID string
@@ -254,7 +255,7 @@ func (s *Store) ApplyPasswordReset(
 	if _, err := tx.ExecContext(ctx, `delete from verification where identifier=$1`, identifier); err != nil {
 		return mapErr(err)
 	}
-	return tx.Commit()
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
@@ -280,7 +281,7 @@ func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error
 func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return mapErr(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1`, userID); err != nil {
@@ -289,13 +290,13 @@ func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
 	if _, err := tx.ExecContext(ctx, `delete from two_factor where user_id=$1`, userID); err != nil {
 		return mapErr(err)
 	}
-	return tx.Commit()
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) ReplaceBackupCodes(ctx context.Context, userID string, codeHashes []string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return err
+		return mapErr(err)
 	}
 	defer tx.Rollback()
 	if _, err := tx.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1`, userID); err != nil {
@@ -308,7 +309,7 @@ insert into two_factor_backup_code (user_id, code_hash, created_at) values ($1,$
 			return mapErr(err)
 		}
 	}
-	return tx.Commit()
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) (bool, error) {
@@ -318,7 +319,7 @@ func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) 
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, mapErr(err)
 	}
 	return n > 0, nil
 }
@@ -332,7 +333,7 @@ func (s *Store) ConsumeTOTPStep(ctx context.Context, userID string, counter int6
 	}
 	n, err := res.RowsAffected()
 	if err != nil {
-		return false, err
+		return false, mapErr(err)
 	}
 	return n > 0, nil
 }
@@ -583,7 +584,10 @@ func mapRows(err error, res sql.Result) error {
 		return mapErr(err)
 	}
 	n, err := res.RowsAffected()
-	if err == nil && n == 0 {
+	if err != nil {
+		return mapErr(err)
+	}
+	if n == 0 {
 		return canopy.ErrNotFound
 	}
 	return nil
@@ -596,5 +600,9 @@ func mapErr(err error) error {
 	if errors.Is(err, sql.ErrNoRows) {
 		return canopy.ErrNotFound
 	}
-	return err
+	var pqErr *pq.Error
+	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
+		return fmt.Errorf("%w: %w", canopy.ErrConflict, err)
+	}
+	return fmt.Errorf("%w: %w", canopy.ErrStorageFailure, err)
 }
