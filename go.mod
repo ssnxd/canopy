@@ -1,6 +1,6 @@
 module github.com/ssnxd/canopy
 
-go 1.25.0
+go 1.25.12
 
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0

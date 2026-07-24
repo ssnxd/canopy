@@ -50,6 +50,8 @@ v1.0.0, public APIs may change when needed to improve the v1 design.
 
 ### Changed
 
+- The minimum Go toolchain is now 1.25.12 so builds include the standard-library
+  security fixes enforced by `govulncheck`.
 - The zero-value environment now defaults to `Production`; local development
   must select `canopy.Development` explicitly.
 - `BasePath` now controls request routing and default cookie scope. Mount the
