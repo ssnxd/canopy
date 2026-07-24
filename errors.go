@@ -28,3 +28,27 @@ var (
 	ErrInvitationInvalid          = errors.New("canopy: invitation invalid")
 	ErrLastOrganizationOwner      = errors.New("canopy: organization must retain an owner")
 )
+
+// ValidationError describes invalid request fields while remaining compatible
+// with errors.Is(err, ErrInvalidInput).
+type ValidationError struct {
+	Fields map[string]string
+}
+
+func (e *ValidationError) Error() string {
+	return ErrInvalidInput.Error()
+}
+
+func (e *ValidationError) Unwrap() error {
+	return ErrInvalidInput
+}
+
+// InvalidFields returns a typed validation error with machine-readable field
+// messages. The map is copied so callers may safely reuse it.
+func InvalidFields(fields map[string]string) error {
+	copied := make(map[string]string, len(fields))
+	for field, message := range fields {
+		copied[field] = message
+	}
+	return &ValidationError{Fields: copied}
+}

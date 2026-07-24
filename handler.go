@@ -360,11 +360,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) bool {
 	dec := json.NewDecoder(r.Body)
 	dec.DisallowUnknownFields()
 	if err := dec.Decode(dst); err != nil {
-		writeError(w, ErrInvalidInput)
+		writeError(w, InvalidFields(map[string]string{"body": "must be valid JSON with known fields"}))
 		return false
 	}
 	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		writeError(w, ErrInvalidInput)
+		writeError(w, InvalidFields(map[string]string{"body": "must contain exactly one JSON value"}))
 		return false
 	}
 	return true
@@ -448,10 +448,10 @@ func writeError(w http.ResponseWriter, err error) {
 	case errors.Is(err, ErrStorageFailure):
 		status, code, message = http.StatusInternalServerError, "STORAGE_FAILURE", "Storage operation failed"
 	}
-	writeJSON(w, status, map[string]any{
-		"error": map[string]string{
-			"code":    code,
-			"message": message,
-		},
-	})
+	body := map[string]any{"code": code, "message": message}
+	var validation *ValidationError
+	if errors.As(err, &validation) && len(validation.Fields) > 0 {
+		body["fields"] = validation.Fields
+	}
+	writeJSON(w, status, map[string]any{"error": body})
 }

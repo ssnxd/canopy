@@ -254,11 +254,12 @@ func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*Sessio
 		return nil, "", ErrSignupDisabled
 	}
 	email := normalizeEmail(in.Email)
-	if err := validateEmailPassword(email, in.Password, s.cfg.PasswordMinLength, s.cfg.PasswordMaxLength); err != nil {
-		return nil, "", err
-	}
+	fields := validateEmailPassword(email, in.Password, s.cfg.PasswordMinLength, s.cfg.PasswordMaxLength)
 	if strings.TrimSpace(in.Name) == "" {
-		return nil, "", ErrInvalidInput
+		fields["name"] = "is required"
+	}
+	if len(fields) > 0 {
+		return nil, "", InvalidFields(fields)
 	}
 	if existing, err := s.cfg.Store.FindUserByEmail(ctx, email); err == nil && existing != nil {
 		return nil, "", ErrConflict
@@ -398,7 +399,9 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in RequestPasswordRe
 
 func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) error {
 	if len(in.NewPassword) < s.cfg.PasswordMinLength || len(in.NewPassword) > s.cfg.PasswordMaxLength {
-		return ErrInvalidInput
+		return InvalidFields(map[string]string{
+			"newPassword": fmt.Sprintf("must be between %d and %d bytes", s.cfg.PasswordMinLength, s.cfg.PasswordMaxLength),
+		})
 	}
 	kind := s.passwordResetTokenKind()
 	payload, err := s.verifyActionToken(in.Token, kind.purpose)
@@ -573,8 +576,15 @@ func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*OA
 }
 
 func (s *Service) RefreshProviderToken(ctx context.Context, in RefreshProviderTokenInput) (*RefreshProviderTokenOutput, error) {
-	if in.UserID == "" || in.ProviderID == "" {
-		return nil, ErrInvalidInput
+	fields := map[string]string{}
+	if in.UserID == "" {
+		fields["userId"] = "is required"
+	}
+	if in.ProviderID == "" {
+		fields["providerId"] = "is required"
+	}
+	if len(fields) > 0 {
+		return nil, InvalidFields(fields)
 	}
 	provider, ok := s.providers[in.ProviderID]
 	if !ok {
@@ -826,7 +836,7 @@ func (s *Service) SignOut(ctx context.Context, token string) error {
 
 func (s *Service) RevokeUserSessions(ctx context.Context, userID string) error {
 	if userID == "" {
-		return ErrInvalidInput
+		return InvalidFields(map[string]string{"userId": "is required"})
 	}
 	return s.cfg.Store.DeleteUserSessions(ctx, userID)
 }
@@ -1256,14 +1266,15 @@ func (s *Service) reportHookError(ctx context.Context, hook string, err error) {
 	}
 }
 
-func validateEmailPassword(email, pass string, min, max int) error {
+func validateEmailPassword(email, pass string, min, max int) map[string]string {
+	fields := map[string]string{}
 	if !strings.Contains(email, "@") || strings.ContainsAny(email, " \t\r\n") {
-		return ErrInvalidInput
+		fields["email"] = "must be a valid email address"
 	}
 	if len(pass) < min || len(pass) > max {
-		return ErrInvalidInput
+		fields["password"] = fmt.Sprintf("must be between %d and %d bytes", min, max)
 	}
-	return nil
+	return fields
 }
 
 func remoteIP(remoteAddr string) net.IP {

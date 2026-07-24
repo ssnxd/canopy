@@ -158,6 +158,44 @@ func TestHTTPErrorEnvelopeUsesStableTypedCodes(t *testing.T) {
 	}
 }
 
+func TestSignupReturnsFieldValidationErrors(t *testing.T) {
+	auth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, _, err = auth.API().SignUpEmail(context.Background(), SignUpEmailInput{})
+	if !errors.Is(err, ErrInvalidInput) {
+		t.Fatalf("signup error = %v, want ErrInvalidInput", err)
+	}
+	var validation *ValidationError
+	if !errors.As(err, &validation) {
+		t.Fatalf("signup error type = %T, want *ValidationError", err)
+	}
+	for _, field := range []string{"name", "email", "password"} {
+		if validation.Fields[field] == "" {
+			t.Errorf("missing validation message for %q: %#v", field, validation.Fields)
+		}
+	}
+
+	rec := httptest.NewRecorder()
+	writeError(rec, err)
+	var envelope struct {
+		Error struct {
+			Code   string            `json:"code"`
+			Fields map[string]string `json:"fields"`
+		} `json:"error"`
+	}
+	if err := json.NewDecoder(rec.Body).Decode(&envelope); err != nil {
+		t.Fatal(err)
+	}
+	if envelope.Error.Code != "INVALID_INPUT" || len(envelope.Error.Fields) != 3 {
+		t.Fatalf("validation envelope = %#v", envelope)
+	}
+}
+
 func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	store := newMemoryStore()
 	audit := &testAuditLogger{}
