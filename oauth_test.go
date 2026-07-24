@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -14,6 +15,15 @@ import (
 	authoauth "github.com/ssnxd/canopy/oauth"
 	"golang.org/x/oauth2"
 )
+
+type updateFailingStore struct {
+	*memoryStore
+	err error
+}
+
+func (s *updateFailingStore) UpdateAccount(ctx context.Context, account *Account) error {
+	return s.err
+}
 
 type fakeOAuthProvider struct {
 	id              string
@@ -181,6 +191,78 @@ func TestRefreshProviderTokenWithoutRefreshToken(t *testing.T) {
 	})
 	if err != ErrNoRefreshToken {
 		t.Fatalf("err = %v, want ErrNoRefreshToken", err)
+	}
+}
+
+func TestOAuthLoginPreservesCredentialsOmittedByProvider(t *testing.T) {
+	auth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	profile := &authoauth.Profile{
+		ProviderID:    "google",
+		AccountID:     "google-sub",
+		Email:         "oauth@example.com",
+		EmailVerified: true,
+		AccessToken:   "first-access-token",
+		RefreshToken:  "durable-refresh-token",
+		Scope:         "openid email",
+		IDToken:       "first-id-token",
+	}
+	first, err := auth.API().signInOAuthProfile(ctx, "google", profile, nil, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	profile.AccessToken = "second-access-token"
+	profile.RefreshToken = ""
+	profile.Scope = ""
+	profile.IDToken = ""
+	if _, err := auth.API().signInOAuthProfile(ctx, "google", profile, nil, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	account, err := auth.API().findAccountByUserProvider(ctx, first.Session.User.ID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if account.AccessToken != "second-access-token" {
+		t.Fatalf("access token = %q, want updated token", account.AccessToken)
+	}
+	if account.RefreshToken != "durable-refresh-token" {
+		t.Fatalf("refresh token = %q, want preserved token", account.RefreshToken)
+	}
+	if account.Scope != "openid email" || account.IDToken != "first-id-token" {
+		t.Fatalf("omitted credentials were cleared: %#v", account)
+	}
+}
+
+func TestOAuthLoginPropagatesAccountUpdateFailure(t *testing.T) {
+	updateErr := errors.New("update failed")
+	store := &updateFailingStore{memoryStore: newMemoryStore(), err: updateErr}
+	auth, err := New(Config{
+		Store:  store,
+		Secret: "dev-secret-with-enough-test-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	profile := &authoauth.Profile{
+		ProviderID:    "google",
+		AccountID:     "google-sub",
+		Email:         "oauth@example.com",
+		EmailVerified: true,
+		AccessToken:   "first-access-token",
+	}
+	if _, err := auth.API().signInOAuthProfile(ctx, "google", profile, nil, "", ""); err != nil {
+		t.Fatal(err)
+	}
+	profile.AccessToken = "second-access-token"
+	if _, err := auth.API().signInOAuthProfile(ctx, "google", profile, nil, "", ""); !errors.Is(err, updateErr) {
+		t.Fatalf("signInOAuthProfile() error = %v, want %v", err, updateErr)
 	}
 }
 

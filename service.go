@@ -570,7 +570,9 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 		}
 		updateAccountFromProfile(account, profile)
 		account.UpdatedAt = time.Now().UTC()
-		_ = s.updateAccount(ctx, account)
+		if err := s.updateAccount(ctx, account); err != nil {
+			return nil, err
+		}
 		return s.finishSignIn(ctx, *user, opt)
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -1113,12 +1115,24 @@ func appendToken(callbackURL, token string) string {
 }
 
 func updateAccountFromProfile(account *Account, profile *oauth.Profile) {
-	account.AccessToken = profile.AccessToken
-	account.RefreshToken = profile.RefreshToken
-	account.AccessTokenExpiresAt = profile.AccessTokenExpiresAt
-	account.RefreshTokenExpiresAt = profile.RefreshTokenExpiresAt
-	account.Scope = profile.Scope
-	account.IDToken = profile.IDToken
+	if profile.AccessToken != "" {
+		account.AccessToken = profile.AccessToken
+	}
+	if profile.RefreshToken != "" {
+		account.RefreshToken = profile.RefreshToken
+	}
+	if profile.AccessTokenExpiresAt != nil {
+		account.AccessTokenExpiresAt = profile.AccessTokenExpiresAt
+	}
+	if profile.RefreshTokenExpiresAt != nil {
+		account.RefreshTokenExpiresAt = profile.RefreshTokenExpiresAt
+	}
+	if profile.Scope != "" {
+		account.Scope = profile.Scope
+	}
+	if profile.IDToken != "" {
+		account.IDToken = profile.IDToken
+	}
 }
 
 func (s *Service) audit(ctx context.Context, event AuditEvent) {
