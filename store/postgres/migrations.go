@@ -1,6 +1,17 @@
 package postgres
 
-const Migration = `
+// SchemaMigration is one ordered Canopy database migration.
+type SchemaMigration struct {
+	Version int64
+	Name    string
+	SQL     string
+}
+
+var schemaMigrations = []SchemaMigration{
+	{
+		Version: 1,
+		Name:    "core_auth_schema",
+		SQL: `
 create table if not exists "user" (
 	id text primary key,
 	name text not null,
@@ -10,7 +21,6 @@ create table if not exists "user" (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create unique index if not exists user_email_unique on "user" (lower(email));
 
 create table if not exists session (
@@ -23,13 +33,8 @@ create table if not exists session (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create index if not exists session_user_id_idx on session (user_id);
 create index if not exists session_expires_at_idx on session (expires_at);
-
--- Session tokens created before digest-at-rest support are not distinguishable
--- from bearer credentials safely. Revoke them during migration.
-delete from session where token not like 'sha256:%';
 
 create table if not exists account (
 	id text primary key,
@@ -46,15 +51,8 @@ create table if not exists account (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create unique index if not exists account_provider_account_unique on account (provider_id, account_id);
 create unique index if not exists account_user_provider_unique on account (user_id, provider_id);
-
--- Provider credentials created before encrypted envelopes are revoked. Users
--- can re-authorize the provider without exposing legacy plaintext at rest.
-update account set access_token = '' where access_token <> '' and access_token not like 'enc.v1.%';
-update account set refresh_token = '' where refresh_token <> '' and refresh_token not like 'enc.v1.%';
-update account set id_token = '' where id_token <> '' and id_token not like 'enc.v1.%';
 
 create table if not exists verification (
 	id text primary key,
@@ -64,10 +62,14 @@ create table if not exists verification (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create unique index if not exists verification_identifier_value_unique on verification (identifier, value);
 create index if not exists verification_expires_at_idx on verification (expires_at);
-
+`,
+	},
+	{
+		Version: 2,
+		Name:    "modules_and_admin",
+		SQL: `
 alter table "user" add column if not exists role text not null default '';
 alter table "user" add column if not exists banned boolean not null default false;
 alter table "user" add column if not exists ban_reason text not null default '';
@@ -84,7 +86,6 @@ create table if not exists two_factor (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 alter table two_factor add column if not exists last_totp_step bigint not null default -1;
 
 create table if not exists two_factor_backup_code (
@@ -101,7 +102,6 @@ create table if not exists organization (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create unique index if not exists organization_slug_unique on organization (lower(slug));
 
 create table if not exists organization_member (
@@ -112,7 +112,6 @@ create table if not exists organization_member (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create unique index if not exists organization_member_unique on organization_member (organization_id, user_id);
 create index if not exists organization_member_user_idx on organization_member (user_id);
 
@@ -127,6 +126,29 @@ create table if not exists organization_invitation (
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
-
 create index if not exists organization_invitation_org_idx on organization_invitation (organization_id);
-`
+`,
+	},
+	{
+		Version: 3,
+		Name:    "credential_protection",
+		SQL: `
+-- Legacy session tokens cannot be converted to digests without plaintext
+-- bearer credentials, so revoke them during this migration.
+delete from session where token not like 'sha256:%';
+
+-- Legacy provider credentials are cleared. Users can safely re-authorize.
+update account set access_token = '' where access_token <> '' and access_token not like 'enc.v1.%';
+update account set refresh_token = '' where refresh_token <> '' and refresh_token not like 'enc.v1.%';
+update account set id_token = '' where id_token <> '' and id_token not like 'enc.v1.%';
+`,
+	},
+}
+
+// Migrations returns the ordered schema migrations for deployments that use an
+// external migration runner.
+func Migrations() []SchemaMigration {
+	out := make([]SchemaMigration, len(schemaMigrations))
+	copy(out, schemaMigrations)
+	return out
+}

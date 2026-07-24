@@ -237,6 +237,21 @@ func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
 	return nil
 }
 
+func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteExpiredSessionsLocked(now)
+	return nil
+}
+
+func (s *Store) deleteExpiredSessionsLocked(now time.Time) {
+	for token, session := range s.sessions {
+		if !session.ExpiresAt.After(now) {
+			delete(s.sessions, token)
+		}
+	}
+}
+
 func (s *Store) CreateVerification(ctx context.Context, v *canopy.Verification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -291,6 +306,19 @@ func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) e
 	defer s.mu.Unlock()
 	for key, v := range s.verifications {
 		if !v.ExpiresAt.After(now) {
+			delete(s.verifications, key)
+		}
+	}
+	return nil
+}
+
+// CleanupExpired removes expired session and verification records atomically.
+func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteExpiredSessionsLocked(now)
+	for key, verification := range s.verifications {
+		if !verification.ExpiresAt.After(now) {
 			delete(s.verifications, key)
 		}
 	}

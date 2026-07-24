@@ -182,6 +182,17 @@ func (s *memoryStore) DeleteUserSessions(ctx context.Context, userID string) err
 	return nil
 }
 
+func (s *memoryStore) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for token, session := range s.sessionsByTok {
+		if !session.ExpiresAt.After(now) {
+			delete(s.sessionsByTok, token)
+		}
+	}
+	return nil
+}
+
 func (s *memoryStore) CreateVerification(ctx context.Context, verification *Verification) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

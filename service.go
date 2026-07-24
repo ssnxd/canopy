@@ -140,6 +140,10 @@ type passwordResetStore interface {
 	) error
 }
 
+type cleanupStore interface {
+	CleanupExpired(ctx context.Context, now time.Time) error
+}
+
 type actionTokenKind struct {
 	purpose   string
 	ttl       time.Duration
@@ -839,6 +843,21 @@ func (s *Service) RevokeUserSessions(ctx context.Context, userID string) error {
 		return InvalidFields(map[string]string{"userId": "is required"})
 	}
 	return s.cfg.Store.DeleteUserSessions(ctx, userID)
+}
+
+// CleanupExpired removes expired sessions and verification records. Call it
+// periodically from the application's scheduler.
+func (s *Service) CleanupExpired(ctx context.Context, now time.Time) error {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if store, ok := s.cfg.Store.(cleanupStore); ok {
+		return store.CleanupExpired(ctx, now)
+	}
+	if err := s.cfg.Store.DeleteExpiredSessions(ctx, now); err != nil {
+		return err
+	}
+	return s.cfg.Store.DeleteExpiredVerifications(ctx, now)
 }
 
 // Middleware is a deprecated alias for OptionalSession.

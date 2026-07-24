@@ -22,8 +22,43 @@ func New(db *sql.DB) *Store {
 }
 
 func (s *Store) Migrate(ctx context.Context) error {
-	_, err := s.db.ExecContext(ctx, Migration)
-	return mapErr(err)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `select pg_advisory_xact_lock($1)`, int64(0x43616e6f7079)); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		create table if not exists canopy_schema_migration (
+			version bigint primary key,
+			name text not null,
+			applied_at timestamptz not null default now()
+		)`); err != nil {
+		return mapErr(err)
+	}
+	for _, migration := range schemaMigrations {
+		var applied bool
+		if err := tx.QueryRowContext(ctx, `
+			select exists(
+				select 1 from canopy_schema_migration where version=$1
+			)`, migration.Version).Scan(&applied); err != nil {
+			return mapErr(err)
+		}
+		if applied {
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, migration.SQL); err != nil {
+			return fmt.Errorf("postgres: apply migration %d (%s): %w", migration.Version, migration.Name, mapErr(err))
+		}
+		if _, err := tx.ExecContext(ctx, `
+			insert into canopy_schema_migration (version, name)
+			values ($1,$2)`, migration.Version, migration.Name); err != nil {
+			return mapErr(err)
+		}
+	}
+	return mapErr(tx.Commit())
 }
 
 const userColumns = `id, name, email, email_verified, image, role, banned, ban_reason, ban_expires_at, created_at, updated_at`
@@ -164,6 +199,11 @@ func (s *Store) DeleteUserSessions(ctx context.Context, userID string) error {
 	return mapErr(err)
 }
 
+func (s *Store) DeleteExpiredSessions(ctx context.Context, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `delete from session where expires_at <= $1`, now)
+	return mapErr(err)
+}
+
 func (s *Store) CreateVerification(ctx context.Context, v *canopy.Verification) error {
 	_, err := s.db.ExecContext(ctx, `
 insert into verification (id, identifier, value, expires_at, created_at, updated_at)
@@ -216,6 +256,22 @@ func (s *Store) DeleteVerificationsByIdentifier(ctx context.Context, identifier 
 func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `delete from verification where expires_at <= $1`, now)
 	return mapErr(err)
+}
+
+// CleanupExpired removes expired session and verification records atomically.
+func (s *Store) CleanupExpired(ctx context.Context, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from session where expires_at <= $1`, now); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `delete from verification where expires_at <= $1`, now); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
 }
 
 // ApplyPasswordReset atomically consumes one reset token, updates the account,

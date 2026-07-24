@@ -21,6 +21,7 @@ type Store interface {
 	UpdateSession(ctx context.Context, session *Session) error
 	DeleteSessionByToken(ctx context.Context, token string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
+	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 
 	CreateVerification(ctx context.Context, verification *Verification) error
 	ReplaceVerification(ctx context.Context, verification *Verification) error

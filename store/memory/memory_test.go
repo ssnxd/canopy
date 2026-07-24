@@ -170,3 +170,44 @@ func TestUpdateMemberRoleProtectsLastOwner(t *testing.T) {
 		t.Fatalf("last owner role = %q, want owner", stored.Role)
 	}
 }
+
+func TestCleanupExpiredRetainsLiveRecords(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &canopy.User{ID: "usr_cleanup", Name: "Ada", Email: "ada@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	for _, session := range []*canopy.Session{
+		{ID: "ses_expired", UserID: user.ID, Token: "expired-token", ExpiresAt: now.Add(-time.Minute), CreatedAt: now, UpdatedAt: now},
+		{ID: "ses_live", UserID: user.ID, Token: "live-token", ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.CreateSession(ctx, session); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for _, verification := range []*canopy.Verification{
+		{ID: "ver_expired", Identifier: "cleanup", Value: "expired", ExpiresAt: now.Add(-time.Minute), CreatedAt: now, UpdatedAt: now},
+		{ID: "ver_live", Identifier: "cleanup", Value: "live", ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now},
+	} {
+		if err := store.CreateVerification(ctx, verification); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := store.CleanupExpired(ctx, now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindSessionByToken(ctx, "expired-token"); err != canopy.ErrNotFound {
+		t.Fatalf("expired session error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.FindSessionByToken(ctx, "live-token"); err != nil {
+		t.Fatalf("live session error = %v", err)
+	}
+	if _, err := store.ConsumeVerification(ctx, "cleanup", "expired", now); err != canopy.ErrNotFound {
+		t.Fatalf("expired verification error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.ConsumeVerification(ctx, "cleanup", "live", now); err != nil {
+		t.Fatalf("live verification error = %v", err)
+	}
+}

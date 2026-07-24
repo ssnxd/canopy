@@ -30,6 +30,26 @@ func TestMapRowsPropagatesRowsAffectedFailure(t *testing.T) {
 	}
 }
 
+func TestMigrationsAreOrderedAndDefensivelyCopied(t *testing.T) {
+	migrations := Migrations()
+	if len(migrations) < 2 {
+		t.Fatalf("migrations = %d, want multiple versioned migrations", len(migrations))
+	}
+	for i, migration := range migrations {
+		if migration.Version <= 0 || migration.Name == "" || migration.SQL == "" {
+			t.Fatalf("invalid migration: %#v", migration)
+		}
+		if i > 0 && migrations[i-1].Version >= migration.Version {
+			t.Fatalf("migration versions are not increasing: %#v", migrations)
+		}
+	}
+	originalName := migrations[0].Name
+	migrations[0].Name = "mutated"
+	if Migrations()[0].Name != originalName {
+		t.Fatal("Migrations returned mutable package state")
+	}
+}
+
 type failingResult struct {
 	err error
 }
