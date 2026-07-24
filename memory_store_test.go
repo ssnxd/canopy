@@ -190,6 +190,19 @@ func (s *memoryStore) CreateVerification(ctx context.Context, verification *Veri
 	return nil
 }
 
+func (s *memoryStore) ReplaceVerification(ctx context.Context, verification *Verification) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, existing := range s.verifications {
+		if existing.Identifier == verification.Identifier {
+			delete(s.verifications, key)
+		}
+	}
+	cp := *verification
+	s.verifications[verification.Identifier+"|"+verification.Value] = &cp
+	return nil
+}
+
 func (s *memoryStore) ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*Verification, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -201,6 +214,17 @@ func (s *memoryStore) ConsumeVerification(ctx context.Context, identifier, value
 	delete(s.verifications, key)
 	cp := *v
 	return &cp, nil
+}
+
+func (s *memoryStore) DeleteVerificationsByIdentifier(ctx context.Context, identifier string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, verification := range s.verifications {
+		if verification.Identifier == identifier {
+			delete(s.verifications, key)
+		}
+	}
+	return nil
 }
 
 func (s *memoryStore) DeleteExpiredVerifications(ctx context.Context, now time.Time) error {

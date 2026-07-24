@@ -23,6 +23,8 @@ type Store interface {
 	DeleteUserSessions(ctx context.Context, userID string) error
 
 	CreateVerification(ctx context.Context, verification *Verification) error
+	ReplaceVerification(ctx context.Context, verification *Verification) error
 	ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*Verification, error)
+	DeleteVerificationsByIdentifier(ctx context.Context, identifier string) error
 	DeleteExpiredVerifications(ctx context.Context, now time.Time) error
 }

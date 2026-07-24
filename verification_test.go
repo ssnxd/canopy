@@ -176,3 +176,39 @@ func TestPasswordResetFlowRevokesSessionsAndChangesPassword(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestPasswordResetOnlyAcceptsLatestIssuedToken(t *testing.T) {
+	sender := &testEmailSender{}
+	auth, err := New(Config{
+		Store:       newMemoryStore(),
+		Secret:      "dev-secret-with-enough-test-entropy",
+		EmailSender: sender,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	if _, _, err := auth.API().SignUpEmail(ctx, SignUpEmailInput{
+		Name: "Ada", Email: "ada@example.com", Password: "correct-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if err := auth.API().RequestPasswordReset(ctx, RequestPasswordResetInput{Email: "ada@example.com"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(sender.resetMessages) != 2 {
+		t.Fatalf("reset messages = %d, want 2", len(sender.resetMessages))
+	}
+	if err := auth.API().ResetPassword(ctx, ResetPasswordInput{
+		Token: sender.resetMessages[0].Token, NewPassword: "first-new-password",
+	}); !errors.Is(err, ErrInvalidToken) {
+		t.Fatalf("superseded token err = %v, want ErrInvalidToken", err)
+	}
+	if err := auth.API().ResetPassword(ctx, ResetPasswordInput{
+		Token: sender.resetMessages[1].Token, NewPassword: "second-new-password",
+	}); err != nil {
+		t.Fatal(err)
+	}
+}

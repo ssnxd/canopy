@@ -170,6 +170,23 @@ values ($1,$2,$3,$4,$5,$6)`, v.ID, v.Identifier, v.Value, v.ExpiresAt, v.Created
 	return mapErr(err)
 }
 
+func (s *Store) ReplaceVerification(ctx context.Context, v *canopy.Verification) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from verification where identifier=$1`, v.Identifier); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+	insert into verification (id, identifier, value, expires_at, created_at, updated_at)
+	values ($1,$2,$3,$4,$5,$6)`, v.ID, v.Identifier, v.Value, v.ExpiresAt, v.CreatedAt, v.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	return tx.Commit()
+}
+
 func (s *Store) ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*canopy.Verification, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -190,9 +207,54 @@ returning id, identifier, value, expires_at, created_at, updated_at`, identifier
 	return &v, nil
 }
 
+func (s *Store) DeleteVerificationsByIdentifier(ctx context.Context, identifier string) error {
+	_, err := s.db.ExecContext(ctx, `delete from verification where identifier=$1`, identifier)
+	return mapErr(err)
+}
+
 func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) error {
 	_, err := s.db.ExecContext(ctx, `delete from verification where expires_at <= $1`, now)
 	return mapErr(err)
+}
+
+// ApplyPasswordReset atomically consumes one reset token, updates the account,
+// revokes sessions, and removes every other reset token for the identifier.
+func (s *Store) ApplyPasswordReset(
+	ctx context.Context,
+	identifier string,
+	value string,
+	now time.Time,
+	account *canopy.Account,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	var verificationID string
+	if err := tx.QueryRowContext(ctx, `
+	delete from verification
+	where identifier=$1 and value=$2 and expires_at > $3
+	returning id`, identifier, value, now).Scan(&verificationID); err != nil {
+		return mapErr(err)
+	}
+	res, err := tx.ExecContext(ctx, `
+	update account set
+		access_token=$2, refresh_token=$3, access_token_expires_at=$4, refresh_token_expires_at=$5,
+		scope=$6, id_token=$7, password=$8, updated_at=$9
+	where id=$1`,
+		account.ID, account.AccessToken, account.RefreshToken, account.AccessTokenExpiresAt, account.RefreshTokenExpiresAt,
+		account.Scope, account.IDToken, account.Password, account.UpdatedAt)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from session where user_id=$1`, account.UserID); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `delete from verification where identifier=$1`, identifier); err != nil {
+		return mapErr(err)
+	}
+	return tx.Commit()
 }
 
 func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {

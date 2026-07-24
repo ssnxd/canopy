@@ -245,6 +245,19 @@ func (s *Store) CreateVerification(ctx context.Context, v *canopy.Verification) 
 	return nil
 }
 
+func (s *Store) ReplaceVerification(ctx context.Context, v *canopy.Verification) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for key, existing := range s.verifications {
+		if existing.Identifier == v.Identifier {
+			delete(s.verifications, key)
+		}
+	}
+	cp := *v
+	s.verifications[v.Identifier+"|"+v.Value] = &cp
+	return nil
+}
+
 func (s *Store) ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*canopy.Verification, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -258,6 +271,21 @@ func (s *Store) ConsumeVerification(ctx context.Context, identifier, value strin
 	return &cp, nil
 }
 
+func (s *Store) DeleteVerificationsByIdentifier(ctx context.Context, identifier string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteVerificationsByIdentifierLocked(identifier)
+	return nil
+}
+
+func (s *Store) deleteVerificationsByIdentifierLocked(identifier string) {
+	for key, verification := range s.verifications {
+		if verification.Identifier == identifier {
+			delete(s.verifications, key)
+		}
+	}
+}
+
 func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -266,6 +294,37 @@ func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) e
 			delete(s.verifications, key)
 		}
 	}
+	return nil
+}
+
+// ApplyPasswordReset atomically consumes the reset token, updates the password
+// account, revokes sessions, and invalidates every other reset token.
+func (s *Store) ApplyPasswordReset(
+	ctx context.Context,
+	identifier string,
+	value string,
+	now time.Time,
+	account *canopy.Account,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	verificationKey := identifier + "|" + value
+	verification := s.verifications[verificationKey]
+	if verification == nil || !verification.ExpiresAt.After(now) {
+		return canopy.ErrNotFound
+	}
+	accountKey := accountKey(account.ProviderID, account.AccountID)
+	if s.accounts[accountKey] == nil {
+		return canopy.ErrNotFound
+	}
+	accountCopy := *account
+	s.accounts[accountKey] = &accountCopy
+	for token, session := range s.sessions {
+		if session.UserID == account.UserID {
+			delete(s.sessions, token)
+		}
+	}
+	s.deleteVerificationsByIdentifierLocked(identifier)
 	return nil
 }
 

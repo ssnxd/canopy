@@ -126,6 +126,16 @@ type userAccountStore interface {
 	CreateUserAccount(ctx context.Context, user *User, account *Account) error
 }
 
+type passwordResetStore interface {
+	ApplyPasswordReset(
+		ctx context.Context,
+		identifier string,
+		value string,
+		now time.Time,
+		account *Account,
+	) error
+}
+
 type actionTokenKind struct {
 	purpose   string
 	ttl       time.Duration
@@ -318,7 +328,7 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 		return ErrInvalidInput
 	}
 	kind := s.passwordResetTokenKind()
-	payload, err := s.consumeActionToken(ctx, kind, in.Token)
+	payload, err := s.verifyActionToken(in.Token, kind.purpose)
 	if err != nil {
 		s.audit(ctx, AuditEvent{Type: "password_reset.failed", Success: false, Error: err.Error()})
 		return err
@@ -337,11 +347,33 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	}
 	account.Password = hash
 	account.UpdatedAt = time.Now().UTC()
-	if err := s.updateAccount(ctx, account); err != nil {
-		return err
-	}
-	if err := s.cfg.Store.DeleteUserSessions(ctx, user.ID); err != nil {
-		return err
+	identifier := verificationIdentifier(kind.purpose, payload.Email)
+	value := hashString(in.Token)
+	now := time.Now().UTC()
+	if store, ok := s.cfg.Store.(passwordResetStore); ok {
+		storedAccount, err := encryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+		if err != nil {
+			return err
+		}
+		if err := store.ApplyPasswordReset(ctx, identifier, value, now, storedAccount); err != nil {
+			if errors.Is(err, ErrNotFound) {
+				return ErrInvalidToken
+			}
+			return err
+		}
+	} else {
+		if _, err := s.cfg.Store.ConsumeVerification(ctx, identifier, value, now); err != nil {
+			return ErrInvalidToken
+		}
+		if err := s.updateAccount(ctx, account); err != nil {
+			return err
+		}
+		if err := s.cfg.Store.DeleteUserSessions(ctx, user.ID); err != nil {
+			return err
+		}
+		if err := s.cfg.Store.DeleteVerificationsByIdentifier(ctx, identifier); err != nil {
+			return err
+		}
 	}
 	if s.cfg.Hooks.AfterPasswordReset != nil {
 		if err := s.cfg.Hooks.AfterPasswordReset(*user); err != nil {
@@ -998,7 +1030,7 @@ func (s *Service) issueActionToken(ctx context.Context, kind actionTokenKind, em
 	if err != nil {
 		return "", time.Time{}, err
 	}
-	if err := s.cfg.Store.CreateVerification(ctx, &Verification{
+	if err := s.cfg.Store.ReplaceVerification(ctx, &Verification{
 		ID:         verificationID,
 		Identifier: verificationIdentifier(kind.purpose, payload.Email),
 		Value:      hashString(token),
