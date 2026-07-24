@@ -196,6 +196,17 @@ func (h *httpHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, ErrUnauthorized)
 		return
 	}
+	if h.cfg.BasePath != "/" {
+		if !strings.HasPrefix(r.URL.Path, h.cfg.BasePath+"/") {
+			http.NotFound(w, r)
+			return
+		}
+		r = r.Clone(r.Context())
+		urlCopy := *r.URL
+		urlCopy.Path = strings.TrimPrefix(urlCopy.Path, h.cfg.BasePath)
+		urlCopy.RawPath = ""
+		r.URL = &urlCopy
+	}
 	h.mux.ServeHTTP(w, r)
 }
 

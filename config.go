@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"path"
 	"slices"
 	"strings"
 	"time"
@@ -91,12 +92,6 @@ func (noopEmailSender) SendPasswordReset(ctx context.Context, message PasswordRe
 	return nil
 }
 
-type AccountLinkingPolicy string
-
-const (
-	AccountLinkingRejectExplicit AccountLinkingPolicy = "reject-explicit"
-)
-
 type Config struct {
 	Store           Store
 	Secret          string
@@ -113,7 +108,6 @@ type Config struct {
 	AuditLogger              AuditLogger
 	HookErrorHandler         HookErrorHandler
 	EmailSender              EmailSender
-	AccountLinkingPolicy     AccountLinkingPolicy
 	TrustedOrigins           []string
 	TrustedProxies           []string
 	DisableOriginCheck       bool
@@ -154,9 +148,6 @@ func (c *Config) setDefaults() {
 	if c.EmailSender == nil {
 		c.EmailSender = noopEmailSender{}
 	}
-	if c.AccountLinkingPolicy == "" {
-		c.AccountLinkingPolicy = AccountLinkingRejectExplicit
-	}
 	if c.OAuthStateTTL == 0 {
 		c.OAuthStateTTL = 10 * time.Minute
 	}
@@ -168,6 +159,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.PasswordResetTTL == 0 {
 		c.PasswordResetTTL = time.Hour
+	}
+	if c.Session.CookiePath == "" {
+		c.Session.CookiePath = c.BasePath
 	}
 	c.Session.SetDefaults(c.Environment == Production)
 	if c.Session.Expiry == 0 {
@@ -193,6 +187,9 @@ func (c Config) validate() error {
 	}
 	if c.Secret == "" {
 		return fmt.Errorf("canopy: secret is required")
+	}
+	if c.BasePath[0] != '/' || c.BasePath != path.Clean(c.BasePath) {
+		return fmt.Errorf("canopy: base path must be a clean absolute path")
 	}
 	seenSecrets := map[string]bool{c.Secret: true}
 	for _, secret := range c.PreviousSecrets {

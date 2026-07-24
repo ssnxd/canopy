@@ -23,11 +23,6 @@ type Config struct {
 	DisableAbsoluteExpiry bool
 }
 
-type Codec interface {
-	Encode(token string) (string, error)
-	Decode(value string) (string, error)
-}
-
 func (c *Config) SetDefaults(production bool) {
 	if c.CookieName == "" {
 		if c.CookiePrefix != "" {

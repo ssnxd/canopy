@@ -78,6 +78,42 @@ func TestConfigValidatesPreviousSecrets(t *testing.T) {
 	}
 }
 
+func TestBasePathMountsRoutesAndScopesCookies(t *testing.T) {
+	auth, err := New(Config{
+		Store:    newMemoryStore(),
+		Secret:   "dev-secret-with-enough-test-entropy",
+		BasePath: "/auth",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"name":"Ada","email":"ada@example.com","password":"correct-password"}`)
+	rec := httptest.NewRecorder()
+	auth.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/auth/sign-up/email", bytes.NewReader(body)))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("base-path signup status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	cookies := rec.Result().Cookies()
+	if len(cookies) != 1 || cookies[0].Path != "/auth" {
+		t.Fatalf("base-path cookies = %#v, want path /auth", cookies)
+	}
+	rec = httptest.NewRecorder()
+	auth.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/sign-up/email", bytes.NewReader(body)))
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("unprefixed route status = %d, want 404", rec.Code)
+	}
+}
+
+func TestConfigRejectsInvalidBasePath(t *testing.T) {
+	for _, basePath := range []string{"auth", "/auth/", "/auth/../admin"} {
+		if _, err := New(Config{
+			Store: newMemoryStore(), Secret: "dev-secret-with-enough-test-entropy", BasePath: basePath,
+		}); err == nil {
+			t.Fatalf("New() accepted invalid base path %q", basePath)
+		}
+	}
+}
+
 func TestConfigRequiresEmailSenderForRequiredVerification(t *testing.T) {
 	_, err := New(Config{
 		Store:                    newMemoryStore(),
