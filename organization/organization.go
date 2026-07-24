@@ -131,16 +131,12 @@ func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	org := &canopy.Organization{ID: orgID, Name: strings.TrimSpace(req.Name), Slug: slug, CreatedAt: now, UpdatedAt: now}
-	if err := m.store.CreateOrganization(r.Context(), org); err != nil {
-		canopy.WriteError(w, err)
-		return
-	}
 	memberID, err := newID("mem")
 	if err != nil {
 		canopy.WriteError(w, err)
 		return
 	}
-	if err := m.store.CreateMember(r.Context(), &canopy.Member{
+	if err := m.store.CreateOrganizationWithOwner(r.Context(), org, &canopy.Member{
 		ID: memberID, OrganizationID: org.ID, UserID: data.User.ID, Role: RoleOwner, CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		canopy.WriteError(w, err)
@@ -273,23 +269,19 @@ func (m *Module) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	now := time.Now().UTC()
-	if _, err := m.store.FindMember(r.Context(), invitation.OrganizationID, data.User.ID); err != nil {
-		memberID, err := newID("mem")
-		if err != nil {
-			canopy.WriteError(w, err)
-			return
-		}
-		if err := m.store.CreateMember(r.Context(), &canopy.Member{
-			ID: memberID, OrganizationID: invitation.OrganizationID, UserID: data.User.ID, Role: invitation.Role, CreatedAt: now, UpdatedAt: now,
-		}); err != nil {
-			canopy.WriteError(w, err)
-			return
-		}
-	}
-	invitation.Status = "accepted"
-	invitation.UpdatedAt = now
-	if err := m.store.UpdateInvitation(r.Context(), invitation); err != nil {
+	memberID, err := newID("mem")
+	if err != nil {
 		canopy.WriteError(w, err)
+		return
+	}
+	if err := m.store.AcceptInvitation(r.Context(), invitation.ID, data.User.Email, now, &canopy.Member{
+		ID: memberID, OrganizationID: invitation.OrganizationID, UserID: data.User.ID, Role: invitation.Role, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		if errors.Is(err, canopy.ErrNotFound) {
+			canopy.WriteError(w, canopy.ErrInvitationInvalid)
+		} else {
+			canopy.WriteError(w, err)
+		}
 		return
 	}
 	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "organization.member.joined", UserID: data.User.ID, Email: data.User.Email, Success: true})
@@ -387,11 +379,7 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrForbidden)
 		return
 	}
-	if err := m.store.DeleteMember(r.Context(), req.OrganizationID, req.UserID); err != nil {
-		canopy.WriteError(w, err)
-		return
-	}
-	if err := m.store.ClearActiveOrganization(r.Context(), req.OrganizationID, req.UserID); err != nil {
+	if err := m.store.RemoveMemberAndClearSessions(r.Context(), req.OrganizationID, req.UserID, time.Now().UTC()); err != nil {
 		canopy.WriteError(w, err)
 		return
 	}

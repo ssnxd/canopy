@@ -32,6 +32,11 @@ type Hooks struct {
 	AfterPasswordReset func(user User) error
 }
 
+// HookErrorHandler observes failures from After hooks. After hooks run after
+// state is committed, so their errors are reported here instead of changing
+// the operation's result.
+type HookErrorHandler func(ctx context.Context, hook string, err error)
+
 type AuditEvent struct {
 	Type       string
 	UserID     string
@@ -105,6 +110,7 @@ type Config struct {
 	PasswordHasher           password.Hasher
 	ProviderTokenCodec       ProviderTokenCodec
 	AuditLogger              AuditLogger
+	HookErrorHandler         HookErrorHandler
 	EmailSender              EmailSender
 	AccountLinkingPolicy     AccountLinkingPolicy
 	TrustedOrigins           []string

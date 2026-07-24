@@ -163,6 +163,49 @@ func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	}
 }
 
+func TestAfterHookFailureDoesNotMisreportCommittedSignup(t *testing.T) {
+	hookErr := errors.New("hook failed")
+	audit := &testAuditLogger{}
+	var handledHook string
+	auth, err := New(Config{
+		Store:       newMemoryStore(),
+		Secret:      "dev-secret-with-enough-test-entropy",
+		AuditLogger: audit,
+		Hooks: Hooks{
+			AfterUserCreate: func(user User) error { return hookErr },
+		},
+		HookErrorHandler: func(ctx context.Context, hook string, err error) {
+			if errors.Is(err, hookErr) {
+				handledHook = hook
+			}
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, token, err := auth.API().SignUpEmail(context.Background(), SignUpEmailInput{
+		Name: "Ada", Email: "ada@example.com", Password: "correct-password",
+	})
+	if err != nil {
+		t.Fatalf("SignUpEmail() error = %v after user was committed", err)
+	}
+	if data == nil || token == "" {
+		t.Fatalf("signup result = (%#v, %q), want session", data, token)
+	}
+	if handledHook != "after_user_create" {
+		t.Fatalf("handled hook = %q, want after_user_create", handledHook)
+	}
+	var foundAudit bool
+	for _, event := range audit.events {
+		if event.Type == "hook.after_user_create.failed" && event.Error == hookErr.Error() {
+			foundAudit = true
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("hook failure was not audited: %#v", audit.events)
+	}
+}
+
 func TestHTTPEmailFlowAndSessionContext(t *testing.T) {
 	auth, err := New(Config{
 		Store:  newMemoryStore(),

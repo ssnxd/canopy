@@ -23,6 +23,9 @@ type TwoFactor struct {
 type TwoFactorStore interface {
 	GetTwoFactor(ctx context.Context, userID string) (*TwoFactor, error)
 	UpsertTwoFactor(ctx context.Context, tf *TwoFactor) error
+	// EnableTwoFactor stores enabled state and replaces backup codes
+	// atomically.
+	EnableTwoFactor(ctx context.Context, tf *TwoFactor, codeHashes []string) error
 	DeleteTwoFactor(ctx context.Context, userID string) error
 	// ReplaceBackupCodes replaces all backup code hashes for the user.
 	ReplaceBackupCodes(ctx context.Context, userID string, codeHashes []string) error

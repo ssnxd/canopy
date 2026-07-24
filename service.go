@@ -233,7 +233,7 @@ func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*Sessio
 	}
 	if s.cfg.Hooks.AfterUserCreate != nil {
 		if err := s.cfg.Hooks.AfterUserCreate(*user); err != nil {
-			return nil, "", err
+			s.reportHookError(ctx, "after_user_create", err)
 		}
 	}
 	if s.cfg.RequireEmailVerification {
@@ -281,7 +281,7 @@ func (s *Service) VerifyEmail(ctx context.Context, in VerifyEmailInput) (*User, 
 	}
 	if s.cfg.Hooks.AfterEmailVerified != nil {
 		if err := s.cfg.Hooks.AfterEmailVerified(*user); err != nil {
-			return nil, err
+			s.reportHookError(ctx, "after_email_verified", err)
 		}
 	}
 	s.audit(ctx, AuditEvent{Type: "email_verification.succeeded", UserID: user.ID, Email: user.Email, Success: true})
@@ -378,7 +378,7 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	}
 	if s.cfg.Hooks.AfterPasswordReset != nil {
 		if err := s.cfg.Hooks.AfterPasswordReset(*user); err != nil {
-			return err
+			s.reportHookError(ctx, "after_password_reset", err)
 		}
 	}
 	s.audit(ctx, AuditEvent{Type: "password_reset.succeeded", UserID: user.ID, Email: user.Email, Success: true})
@@ -486,7 +486,7 @@ func (s *Service) oauthCallback(ctx context.Context, in OAuthCallbackInput) (*OA
 	if result.Session != nil {
 		if s.cfg.Hooks.AfterOAuth != nil {
 			if err := s.cfg.Hooks.AfterOAuth(*result.Session); err != nil {
-				return nil, err
+				s.reportHookError(ctx, "after_oauth", err)
 			}
 		}
 		s.audit(ctx, AuditEvent{Type: "oauth.callback.succeeded", UserID: result.Session.User.ID, Email: result.Session.User.Email, ProviderID: provider.ID(), IPAddress: in.IPAddress, UserAgent: in.UserAgent, Success: true})
@@ -628,7 +628,7 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 	}
 	if s.cfg.Hooks.AfterUserCreate != nil {
 		if err := s.cfg.Hooks.AfterUserCreate(*user); err != nil {
-			return nil, err
+			s.reportHookError(ctx, "after_user_create", err)
 		}
 	}
 	return s.finishSignIn(ctx, *user, opt)
@@ -745,7 +745,9 @@ func (s *Service) SignOut(ctx context.Context, token string) error {
 		s.audit(ctx, AuditEvent{Type: "session.revoked", UserID: data.User.ID, Email: data.User.Email, Success: true})
 	}
 	if s.cfg.Hooks.AfterSignOut != nil && data != nil {
-		return s.cfg.Hooks.AfterSignOut(&data.Session)
+		if err := s.cfg.Hooks.AfterSignOut(&data.Session); err != nil {
+			s.reportHookError(ctx, "after_sign_out", err)
+		}
 	}
 	return nil
 }
@@ -832,7 +834,7 @@ func (s *Service) IssueSession(ctx context.Context, user User, opt SessionOption
 	data := &SessionData{User: user, Session: *session}
 	if s.cfg.Hooks.AfterSignIn != nil {
 		if err := s.cfg.Hooks.AfterSignIn(*data); err != nil {
-			return nil, "", err
+			s.reportHookError(ctx, "after_sign_in", err)
 		}
 	}
 	return data, token, nil
@@ -1148,6 +1150,17 @@ func updateAccountFromProfile(account *Account, profile *oauth.Profile) {
 func (s *Service) audit(ctx context.Context, event AuditEvent) {
 	event.At = time.Now().UTC()
 	s.cfg.AuditLogger.LogAuthEvent(ctx, event)
+}
+
+func (s *Service) reportHookError(ctx context.Context, hook string, err error) {
+	s.audit(ctx, AuditEvent{
+		Type:    "hook." + hook + ".failed",
+		Success: false,
+		Error:   err.Error(),
+	})
+	if s.cfg.HookErrorHandler != nil {
+		s.cfg.HookErrorHandler(ctx, hook, err)
+	}
 }
 
 func validateEmailPassword(email, pass string, min, max int) error {

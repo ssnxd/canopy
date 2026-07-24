@@ -41,6 +41,8 @@ type Invitation struct {
 // module requires it.
 type OrganizationStore interface {
 	CreateOrganization(ctx context.Context, org *Organization) error
+	// CreateOrganizationWithOwner creates both records atomically.
+	CreateOrganizationWithOwner(ctx context.Context, org *Organization, owner *Member) error
 	FindOrganizationByID(ctx context.Context, id string) (*Organization, error)
 	FindOrganizationBySlug(ctx context.Context, slug string) (*Organization, error)
 	ListOrganizationsForUser(ctx context.Context, userID string) ([]Organization, error)
@@ -53,9 +55,15 @@ type OrganizationStore interface {
 	UpdateMember(ctx context.Context, member *Member) error
 	DeleteMember(ctx context.Context, orgID, userID string) error
 	ClearActiveOrganization(ctx context.Context, orgID, userID string) error
+	// RemoveMemberAndClearSessions removes the member and clears that
+	// organization from their active sessions atomically.
+	RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error
 
 	CreateInvitation(ctx context.Context, invitation *Invitation) error
 	FindInvitation(ctx context.Context, id string) (*Invitation, error)
 	ListInvitationsForOrg(ctx context.Context, orgID string) ([]Invitation, error)
 	UpdateInvitation(ctx context.Context, invitation *Invitation) error
+	// AcceptInvitation marks a pending, unexpired invitation accepted and
+	// creates the member atomically. An existing membership is preserved.
+	AcceptInvitation(ctx context.Context, invitationID, email string, now time.Time, member *Member) error
 }

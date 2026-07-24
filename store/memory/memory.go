@@ -346,6 +346,22 @@ func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error
 	return nil
 }
 
+func (s *Store) EnableTwoFactor(ctx context.Context, tf *canopy.TwoFactor, codeHashes []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.twoFactor[tf.UserID] == nil {
+		return canopy.ErrNotFound
+	}
+	tfCopy := *tf
+	codeSet := make(map[string]bool, len(codeHashes))
+	for _, hash := range codeHashes {
+		codeSet[hash] = true
+	}
+	s.twoFactor[tf.UserID] = &tfCopy
+	s.backupCodes[tf.UserID] = codeSet
+	return nil
+}
+
 func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -394,6 +410,10 @@ func (s *Store) ConsumeTOTPStep(ctx context.Context, userID string, counter int6
 func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.createOrganizationLocked(org)
+}
+
+func (s *Store) createOrganizationLocked(org *canopy.Organization) error {
 	for _, o := range s.organizations {
 		if strings.EqualFold(o.Slug, org.Slug) {
 			return canopy.ErrConflict
@@ -401,6 +421,22 @@ func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization
 	}
 	cp := *org
 	s.organizations[org.ID] = &cp
+	return nil
+}
+
+func (s *Store) CreateOrganizationWithOwner(ctx context.Context, org *canopy.Organization, owner *canopy.Member) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.createOrganizationLocked(org); err != nil {
+		return err
+	}
+	key := memberKey(owner.OrganizationID, owner.UserID)
+	if s.members[key] != nil {
+		delete(s.organizations, org.ID)
+		return canopy.ErrConflict
+	}
+	ownerCopy := *owner
+	s.members[key] = &ownerCopy
 	return nil
 }
 
@@ -535,6 +571,23 @@ func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID strin
 	return nil
 }
 
+func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := memberKey(orgID, userID)
+	if s.members[key] == nil {
+		return canopy.ErrNotFound
+	}
+	delete(s.members, key)
+	for _, session := range s.sessions {
+		if session.UserID == userID && session.ActiveOrganizationID == orgID {
+			session.ActiveOrganizationID = ""
+			session.UpdatedAt = now
+		}
+	}
+	return nil
+}
+
 func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -573,6 +626,31 @@ func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitat
 	}
 	cp := *invitation
 	s.invitations[invitation.ID] = &cp
+	return nil
+}
+
+func (s *Store) AcceptInvitation(
+	ctx context.Context,
+	invitationID string,
+	email string,
+	now time.Time,
+	member *canopy.Member,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	invitation := s.invitations[invitationID]
+	if invitation == nil ||
+		invitation.Status != "pending" ||
+		!invitation.ExpiresAt.After(now) ||
+		!strings.EqualFold(strings.TrimSpace(invitation.Email), strings.TrimSpace(email)) {
+		return canopy.ErrNotFound
+	}
+	if key := memberKey(member.OrganizationID, member.UserID); s.members[key] == nil {
+		memberCopy := *member
+		s.members[key] = &memberCopy
+	}
+	invitation.Status = "accepted"
+	invitation.UpdatedAt = now
 	return nil
 }
 

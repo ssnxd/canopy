@@ -221,16 +221,12 @@ func (m *Module) handleVerify(w http.ResponseWriter, r *http.Request) {
 	tf.Enabled = true
 	tf.LastTOTPStep = counter
 	tf.UpdatedAt = time.Now().UTC()
-	if err := m.store.UpsertTwoFactor(r.Context(), tf); err != nil {
-		canopy.WriteError(w, err)
-		return
-	}
 	plain, hashes, err := m.generateBackupCodes()
 	if err != nil {
 		canopy.WriteError(w, err)
 		return
 	}
-	if err := m.store.ReplaceBackupCodes(r.Context(), data.User.ID, hashes); err != nil {
+	if err := m.store.EnableTwoFactor(r.Context(), tf, hashes); err != nil {
 		canopy.WriteError(w, err)
 		return
 	}

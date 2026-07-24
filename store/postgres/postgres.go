@@ -278,6 +278,33 @@ func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error
 	return mapErr(err)
 }
 
+func (s *Store) EnableTwoFactor(ctx context.Context, tf *canopy.TwoFactor, codeHashes []string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
+	update two_factor set
+		secret=$2, enabled=$3, last_totp_step=$4, updated_at=$5
+	where user_id=$1`,
+		tf.UserID, tf.Secret, tf.Enabled, tf.LastTOTPStep, tf.UpdatedAt)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1`, tf.UserID); err != nil {
+		return mapErr(err)
+	}
+	for _, hash := range codeHashes {
+		if _, err := tx.ExecContext(ctx, `
+			insert into two_factor_backup_code (user_id, code_hash, created_at)
+			values ($1,$2,$3)`, tf.UserID, hash, tf.UpdatedAt); err != nil {
+			return mapErr(err)
+		}
+	}
+	return mapErr(tx.Commit())
+}
+
 func (s *Store) DeleteTwoFactor(ctx context.Context, userID string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -343,6 +370,27 @@ func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization
 insert into organization (id, name, slug, created_at, updated_at) values ($1,$2,$3,$4,$5)`,
 		org.ID, org.Name, org.Slug, org.CreatedAt, org.UpdatedAt)
 	return mapErr(err)
+}
+
+func (s *Store) CreateOrganizationWithOwner(ctx context.Context, org *canopy.Organization, owner *canopy.Member) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `
+		insert into organization (id, name, slug, created_at, updated_at)
+		values ($1,$2,$3,$4,$5)`,
+		org.ID, org.Name, org.Slug, org.CreatedAt, org.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+		insert into organization_member (id, organization_id, user_id, role, created_at, updated_at)
+		values ($1,$2,$3,$4,$5,$6)`,
+		owner.ID, owner.OrganizationID, owner.UserID, owner.Role, owner.CreatedAt, owner.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) FindOrganizationByID(ctx context.Context, id string) (*canopy.Organization, error) {
@@ -439,6 +487,26 @@ func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID strin
 	return mapErr(err)
 }
 
+func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
+		delete from organization_member
+		where organization_id=$1 and user_id=$2`, orgID, userID)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		update session set active_organization_id='', updated_at=$3
+		where user_id=$1 and active_organization_id=$2`, userID, orgID, now); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
+}
+
 func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	_, err := s.db.ExecContext(ctx, `
 insert into organization_invitation (id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at)
@@ -479,6 +547,36 @@ func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitat
 update organization_invitation set email=$2, role=$3, status=$4, expires_at=$5, updated_at=$6 where id=$1`,
 		invitation.ID, invitation.Email, invitation.Role, invitation.Status, invitation.ExpiresAt, invitation.UpdatedAt)
 	return mapRows(err, res)
+}
+
+func (s *Store) AcceptInvitation(
+	ctx context.Context,
+	invitationID string,
+	email string,
+	now time.Time,
+	member *canopy.Member,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, `
+		update organization_invitation
+		set status='accepted', updated_at=$3
+		where id=$1 and lower(email)=lower($2) and status='pending' and expires_at > $3`,
+		invitationID, strings.TrimSpace(email), now)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	if _, err := tx.ExecContext(ctx, `
+		insert into organization_member (id, organization_id, user_id, role, created_at, updated_at)
+		values ($1,$2,$3,$4,$5,$6)
+		on conflict (organization_id, user_id) do nothing`,
+		member.ID, member.OrganizationID, member.UserID, member.Role, member.CreatedAt, member.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
 }
 
 func (s *Store) ListUsers(ctx context.Context, q canopy.UserQuery) ([]canopy.User, int, error) {
