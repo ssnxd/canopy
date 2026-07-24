@@ -26,4 +26,5 @@ var (
 	ErrOrganizationNotFound       = errors.New("canopy: organization not found")
 	ErrNotOrganizationMember      = errors.New("canopy: not organization member")
 	ErrInvitationInvalid          = errors.New("canopy: invitation invalid")
+	ErrLastOrganizationOwner      = errors.New("canopy: organization must retain an owner")
 )

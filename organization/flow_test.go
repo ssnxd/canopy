@@ -20,12 +20,16 @@ type fixture struct {
 }
 
 func newFixture(t *testing.T) *fixture {
+	return newFixtureWithOptions(t, organization.Options{})
+}
+
+func newFixtureWithOptions(t *testing.T, options organization.Options) *fixture {
 	t.Helper()
 	store := memory.New()
 	auth, err := canopy.New(canopy.Config{
 		Store:   store,
 		Secret:  "dev-secret-with-enough-test-entropy",
-		Modules: []canopy.Module{organization.New(organization.Options{})},
+		Modules: []canopy.Module{organization.New(options)},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -213,6 +217,55 @@ func TestOrganizationOwnerCannotBeRemoved(t *testing.T) {
 	}, owner)
 	if remove.Code != http.StatusForbidden {
 		t.Fatalf("remove owner status = %d, want 403", remove.Code)
+	}
+}
+
+func TestOrganizationMustRetainAnOwner(t *testing.T) {
+	f := newFixture(t)
+	ownerCookie := f.signUp(t, "Ada", "ada@example.com")
+	owner, err := f.store.FindUserByEmail(context.Background(), "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	create := f.do(t, http.MethodPost, "/organization/create", map[string]string{"name": "Acme"}, ownerCookie)
+	var org canopy.Organization
+	if err := json.NewDecoder(create.Body).Decode(&org); err != nil {
+		t.Fatal(err)
+	}
+	demote := f.do(t, http.MethodPost, "/organization/update-member-role", map[string]string{
+		"organizationId": org.ID, "userId": owner.ID, "role": organization.RoleMember,
+	}, ownerCookie)
+	if demote.Code != http.StatusConflict {
+		t.Fatalf("last-owner demotion status = %d, want 409 (body=%s)", demote.Code, demote.Body.String())
+	}
+	member, err := f.store.FindMember(context.Background(), org.ID, owner.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if member.Role != organization.RoleOwner {
+		t.Fatalf("role after rejected demotion = %q, want owner", member.Role)
+	}
+}
+
+func TestOrganizationAllowsExplicitCustomRoles(t *testing.T) {
+	f := newFixtureWithOptions(t, organization.Options{AssignableRoles: []string{"billing"}})
+	owner := f.signUp(t, "Ada", "ada@example.com")
+	create := f.do(t, http.MethodPost, "/organization/create", map[string]string{"name": "Acme"}, owner)
+	var org canopy.Organization
+	if err := json.NewDecoder(create.Body).Decode(&org); err != nil {
+		t.Fatal(err)
+	}
+	invite := f.do(t, http.MethodPost, "/organization/invite", map[string]string{
+		"organizationId": org.ID, "email": "billing@example.com", "role": "billing",
+	}, owner)
+	if invite.Code != http.StatusOK {
+		t.Fatalf("custom-role invite status = %d, body = %s", invite.Code, invite.Body.String())
+	}
+	rejected := f.do(t, http.MethodPost, "/organization/invite", map[string]string{
+		"organizationId": org.ID, "email": "member@example.com", "role": organization.RoleMember,
+	}, owner)
+	if rejected.Code != http.StatusBadRequest {
+		t.Fatalf("unconfigured-role invite status = %d, want 400", rejected.Code)
 	}
 }
 

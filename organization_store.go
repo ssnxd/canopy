@@ -53,6 +53,9 @@ type OrganizationStore interface {
 	FindMember(ctx context.Context, orgID, userID string) (*Member, error)
 	ListMembers(ctx context.Context, orgID string) ([]Member, error)
 	UpdateMember(ctx context.Context, member *Member) error
+	// UpdateMemberRole updates a role atomically while ensuring at least one
+	// member retains protectedRole.
+	UpdateMemberRole(ctx context.Context, member *Member, protectedRole string) error
 	DeleteMember(ctx context.Context, orgID, userID string) error
 	ClearActiveOrganization(ctx context.Context, orgID, userID string) error
 	// RemoveMemberAndClearSessions removes the member and clears that

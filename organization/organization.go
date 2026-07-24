@@ -18,6 +18,7 @@ const moduleID = "organization"
 // Options configures the organization module.
 type Options struct {
 	Authorizer        Authorizer    // default: DefaultAuthorizer
+	AssignableRoles   []string      // default: admin and member
 	InvitationTTL     time.Duration // default: 7 days
 	DisableUserCreate bool          // block organization creation by ordinary users
 }
@@ -26,6 +27,7 @@ type Options struct {
 // implements canopy.Module, canopy.RouteModule, and canopy.SessionValidator.
 type Module struct {
 	authorizer        Authorizer
+	assignableRoles   map[string]bool
 	invitationTTL     time.Duration
 	disableUserCreate bool
 
@@ -37,6 +39,7 @@ type Module struct {
 func New(o Options) *Module {
 	return &Module{
 		authorizer:        o.Authorizer,
+		assignableRoles:   roleSet(o.AssignableRoles),
 		invitationTTL:     o.InvitationTTL,
 		disableUserCreate: o.DisableUserCreate,
 	}
@@ -53,6 +56,9 @@ func (m *Module) Init(core canopy.Core) error {
 	m.store = store
 	if m.authorizer == nil {
 		m.authorizer = DefaultAuthorizer()
+	}
+	if len(m.assignableRoles) == 0 {
+		m.assignableRoles = roleSet([]string{RoleAdmin, RoleMember})
 	}
 	if m.invitationTTL == 0 {
 		m.invitationTTL = 7 * 24 * time.Hour
@@ -212,7 +218,7 @@ func (m *Module) handleInvite(w http.ResponseWriter, r *http.Request) {
 	if role == "" {
 		role = RoleMember
 	}
-	if !isAssignableRole(role) {
+	if !m.isAssignableRole(role) {
 		canopy.WriteError(w, canopy.ErrInvalidInput)
 		return
 	}
@@ -329,8 +335,12 @@ func (m *Module) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 		canopy.WriteError(w, err)
 		return
 	}
-	if !isAssignableRole(req.Role) {
+	if req.Role != RoleOwner && !m.isAssignableRole(req.Role) {
 		canopy.WriteError(w, canopy.ErrInvalidInput)
+		return
+	}
+	if req.Role == RoleOwner && actor.Role != RoleOwner {
+		canopy.WriteError(w, canopy.ErrForbidden)
 		return
 	}
 	target, err := m.store.FindMember(r.Context(), req.OrganizationID, req.UserID)
@@ -345,11 +355,25 @@ func (m *Module) handleUpdateMemberRole(w http.ResponseWriter, r *http.Request) 
 	}
 	target.Role = req.Role
 	target.UpdatedAt = time.Now().UTC()
-	if err := m.store.UpdateMember(r.Context(), target); err != nil {
+	if err := m.store.UpdateMemberRole(r.Context(), target, RoleOwner); err != nil {
 		canopy.WriteError(w, err)
 		return
 	}
 	canopy.WriteJSON(w, http.StatusOK, target)
+}
+
+func (m *Module) isAssignableRole(role string) bool {
+	return m.assignableRoles[strings.TrimSpace(role)]
+}
+
+func roleSet(roles []string) map[string]bool {
+	set := make(map[string]bool, len(roles))
+	for _, role := range roles {
+		if role = strings.TrimSpace(role); role != "" {
+			set[role] = true
+		}
+	}
+	return set
 }
 
 func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {

@@ -63,9 +63,3 @@ func (r RBAC) HasPermission(role, permission string) bool {
 	}
 	return perms[permission]
 }
-
-// isAssignableRole reports if role can be assigned through invite or
-// role update. The owner role is not assignable this way.
-func isAssignableRole(role string) bool {
-	return role == RoleAdmin || role == RoleMember
-}

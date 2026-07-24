@@ -475,6 +475,47 @@ func (s *Store) UpdateMember(ctx context.Context, member *canopy.Member) error {
 	return mapRows(err, res)
 }
 
+func (s *Store) UpdateMemberRole(ctx context.Context, member *canopy.Member, protectedRole string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	var organizationID string
+	if err := tx.QueryRowContext(ctx, `
+		select id from organization where id=$1 for update`,
+		member.OrganizationID).Scan(&organizationID); err != nil {
+		return mapErr(err)
+	}
+	var currentRole string
+	if err := tx.QueryRowContext(ctx, `
+		select role from organization_member
+		where organization_id=$1 and user_id=$2`,
+		member.OrganizationID, member.UserID).Scan(&currentRole); err != nil {
+		return mapErr(err)
+	}
+	if currentRole == protectedRole && member.Role != protectedRole {
+		var owners int
+		if err := tx.QueryRowContext(ctx, `
+			select count(*) from organization_member
+			where organization_id=$1 and role=$2`,
+			member.OrganizationID, protectedRole).Scan(&owners); err != nil {
+			return mapErr(err)
+		}
+		if owners <= 1 {
+			return canopy.ErrLastOrganizationOwner
+		}
+	}
+	res, err := tx.ExecContext(ctx, `
+		update organization_member set role=$3, updated_at=$4
+		where organization_id=$1 and user_id=$2`,
+		member.OrganizationID, member.UserID, member.Role, member.UpdatedAt)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
 func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
 	res, err := s.db.ExecContext(ctx, `delete from organization_member where organization_id=$1 and user_id=$2`, orgID, userID)
 	return mapRows(err, res)

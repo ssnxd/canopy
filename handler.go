@@ -430,6 +430,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "NOT_ORGANIZATION_MEMBER", "Not a member of the organization"
 	case errors.Is(err, ErrInvitationInvalid):
 		status, code, message = http.StatusBadRequest, "INVITATION_INVALID", "Invitation is invalid"
+	case errors.Is(err, ErrLastOrganizationOwner):
+		status, code, message = http.StatusConflict, "LAST_ORGANIZATION_OWNER", "Organization must retain an owner"
 	case errors.Is(err, ErrNotFound):
 		status, code, message = http.StatusNotFound, "NOT_FOUND", "Resource was not found"
 	case errors.Is(err, ErrStorageFailure):

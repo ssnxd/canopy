@@ -548,6 +548,30 @@ func (s *Store) UpdateMember(ctx context.Context, member *canopy.Member) error {
 	return nil
 }
 
+func (s *Store) UpdateMemberRole(ctx context.Context, member *canopy.Member, protectedRole string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := memberKey(member.OrganizationID, member.UserID)
+	current := s.members[key]
+	if current == nil {
+		return canopy.ErrNotFound
+	}
+	if current.Role == protectedRole && member.Role != protectedRole {
+		owners := 0
+		for _, candidate := range s.members {
+			if candidate.OrganizationID == member.OrganizationID && candidate.Role == protectedRole {
+				owners++
+			}
+		}
+		if owners <= 1 {
+			return canopy.ErrLastOrganizationOwner
+		}
+	}
+	cp := *member
+	s.members[key] = &cp
+	return nil
+}
+
 func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

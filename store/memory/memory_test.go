@@ -146,3 +146,27 @@ func TestEnableTwoFactorRequiresEnrollmentBeforeWritingCodes(t *testing.T) {
 		t.Fatalf("backup code written on failed enable: consumed=%v err=%v", consumed, err)
 	}
 }
+
+func TestUpdateMemberRoleProtectsLastOwner(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	owner := &canopy.Member{
+		ID: "mem_owner", OrganizationID: "org_owner", UserID: "usr_owner",
+		Role: "owner", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateMember(ctx, owner); err != nil {
+		t.Fatal(err)
+	}
+	owner.Role = "member"
+	if err := store.UpdateMemberRole(ctx, owner, "owner"); err != canopy.ErrLastOrganizationOwner {
+		t.Fatalf("UpdateMemberRole() error = %v, want ErrLastOrganizationOwner", err)
+	}
+	stored, err := store.FindMember(ctx, owner.OrganizationID, owner.UserID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stored.Role != "owner" {
+		t.Fatalf("last owner role = %q, want owner", stored.Role)
+	}
+}
