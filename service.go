@@ -941,11 +941,8 @@ func (s *Service) verifyOAuthState(state string) (oauthStatePayload, error) {
 	if len(parts) != 2 {
 		return payload, ErrInvalidState
 	}
-	mac := hmac.New(sha256.New, []byte(s.cfg.Secret))
-	_, _ = mac.Write([]byte(parts[0]))
-	want := mac.Sum(nil)
 	got, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || !hmac.Equal(got, want) {
+	if err != nil || !s.validSignature(parts[0], got) {
 		return payload, ErrInvalidState
 	}
 	body, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -1076,11 +1073,8 @@ func (s *Service) verifyActionToken(token, purpose string) (actionTokenPayload, 
 	if len(parts) != 2 {
 		return payload, ErrInvalidToken
 	}
-	mac := hmac.New(sha256.New, []byte(s.cfg.Secret))
-	_, _ = mac.Write([]byte(parts[0]))
-	want := mac.Sum(nil)
 	got, err := base64.RawURLEncoding.DecodeString(parts[1])
-	if err != nil || !hmac.Equal(got, want) {
+	if err != nil || !s.validSignature(parts[0], got) {
 		return payload, ErrInvalidToken
 	}
 	body, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -1097,6 +1091,18 @@ func (s *Service) verifyActionToken(token, purpose string) (actionTokenPayload, 
 		return payload, ErrExpiredToken
 	}
 	return payload, nil
+}
+
+func (s *Service) validSignature(value string, signature []byte) bool {
+	valid := false
+	for _, secret := range append([]string{s.cfg.Secret}, s.cfg.PreviousSecrets...) {
+		mac := hmac.New(sha256.New, []byte(secret))
+		_, _ = mac.Write([]byte(value))
+		if hmac.Equal(signature, mac.Sum(nil)) {
+			valid = true
+		}
+	}
+	return valid
 }
 
 func verificationIdentifier(purpose, email string) string {

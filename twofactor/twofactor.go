@@ -43,9 +43,10 @@ type Module struct {
 	challengeTTL     time.Duration
 	recentAuthMaxAge time.Duration
 
-	core  canopy.Core
-	store canopy.TwoFactorStore
-	chKey []byte
+	core      canopy.Core
+	store     canopy.TwoFactorStore
+	chKey     []byte
+	oldChKeys [][]byte
 }
 
 // New returns a two-factor module.
@@ -69,7 +70,7 @@ func (m *Module) Init(core canopy.Core) error {
 	}
 	secret := core.Config().Secret
 	if m.codec == nil {
-		codec, err := NewSecretCodec(secret)
+		codec, err := NewRotatingSecretCodec(secret, core.Config().PreviousSecrets...)
 		if err != nil {
 			return err
 		}
@@ -80,6 +81,13 @@ func (m *Module) Init(core canopy.Core) error {
 		return err
 	}
 	m.chKey = key
+	for _, previous := range core.Config().PreviousSecrets {
+		key, err := deriveKey(previous, "canopy/two-factor/challenge")
+		if err != nil {
+			return err
+		}
+		m.oldChKeys = append(m.oldChKeys, key)
+	}
 	m.core = core
 	m.store = store
 	if m.authenticator == nil {
@@ -396,7 +404,7 @@ func (m *Module) consumeChallenge(ctx context.Context, token string) (string, er
 	if len(parts) != 2 {
 		return "", canopy.ErrInvalidToken
 	}
-	if !hmac.Equal([]byte(m.sign(parts[0])), []byte(parts[1])) {
+	if !m.validSignature(parts[0], parts[1]) {
 		return "", canopy.ErrInvalidToken
 	}
 	body, err := base64.RawURLEncoding.DecodeString(parts[0])
@@ -420,6 +428,18 @@ func (m *Module) sign(value string) string {
 	mac := hmac.New(sha256.New, m.chKey)
 	_, _ = mac.Write([]byte(value))
 	return base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+}
+
+func (m *Module) validSignature(value, signature string) bool {
+	valid := false
+	for _, key := range append([][]byte{m.chKey}, m.oldChKeys...) {
+		mac := hmac.New(sha256.New, key)
+		_, _ = mac.Write([]byte(value))
+		if hmac.Equal([]byte(signature), []byte(base64.RawURLEncoding.EncodeToString(mac.Sum(nil)))) {
+			valid = true
+		}
+	}
+	return valid
 }
 
 func hashToken(value string) string {

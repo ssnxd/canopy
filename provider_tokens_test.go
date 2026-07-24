@@ -50,3 +50,23 @@ func TestProviderTokenCodecRejectsPlaintextAndTampering(t *testing.T) {
 		t.Fatal("tampered provider token was accepted")
 	}
 }
+
+func TestProviderTokenCodecSupportsKeyRotation(t *testing.T) {
+	oldCodec := newProviderTokenCodec("old-provider-token-secret")
+	ciphertext, err := encodeProviderToken(oldCodec, "refresh-token")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated := newProviderTokenCodec("new-provider-token-secret", "old-provider-token-secret")
+	plaintext, err := decodeProviderToken(rotated, ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plaintext != "refresh-token" {
+		t.Fatalf("plaintext = %q, want refresh-token", plaintext)
+	}
+	withoutPrevious := newProviderTokenCodec("new-provider-token-secret")
+	if _, err := decodeProviderToken(withoutPrevious, ciphertext); err == nil {
+		t.Fatal("old ciphertext decrypted without the previous secret")
+	}
+}

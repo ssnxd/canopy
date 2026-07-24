@@ -24,32 +24,47 @@ type ProviderTokenCodec interface {
 }
 
 type aesGCMProviderTokenCodec struct {
-	aead cipher.AEAD
+	current  cipher.AEAD
+	previous []cipher.AEAD
 }
 
-func newProviderTokenCodec(secret string) ProviderTokenCodec {
+func newProviderTokenCodec(secret string, previousSecrets ...string) ProviderTokenCodec {
+	codec := &aesGCMProviderTokenCodec{current: providerTokenAEAD(secret)}
+	for _, previous := range previousSecrets {
+		codec.previous = append(codec.previous, providerTokenAEAD(previous))
+	}
+	return codec
+}
+
+func providerTokenAEAD(secret string) cipher.AEAD {
 	key := make([]byte, 32)
 	reader := hkdf.New(sha256.New, []byte(secret), nil, []byte("canopy/provider-token/v1"))
 	_, _ = io.ReadFull(reader, key)
 	block, _ := aes.NewCipher(key)
 	aead, _ := cipher.NewGCM(block)
-	return &aesGCMProviderTokenCodec{aead: aead}
+	return aead
 }
 
 func (c *aesGCMProviderTokenCodec) Seal(plaintext []byte) ([]byte, error) {
-	nonce := make([]byte, c.aead.NonceSize())
+	nonce := make([]byte, c.current.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, err
 	}
-	return c.aead.Seal(nonce, nonce, plaintext, nil), nil
+	return c.current.Seal(nonce, nonce, plaintext, nil), nil
 }
 
 func (c *aesGCMProviderTokenCodec) Open(ciphertext []byte) ([]byte, error) {
-	nonceSize := c.aead.NonceSize()
+	nonceSize := c.current.NonceSize()
 	if len(ciphertext) < nonceSize {
 		return nil, errors.New("canopy: provider token ciphertext is too short")
 	}
-	return c.aead.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+	for _, aead := range append([]cipher.AEAD{c.current}, c.previous...) {
+		plaintext, err := aead.Open(nil, ciphertext[:nonceSize], ciphertext[nonceSize:], nil)
+		if err == nil {
+			return plaintext, nil
+		}
+	}
+	return nil, errors.New("canopy: provider token authentication failed")
 }
 
 func encodeProviderToken(codec ProviderTokenCodec, value string) (string, error) {

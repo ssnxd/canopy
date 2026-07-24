@@ -22,6 +22,57 @@ func TestAppendTokenPreservesQueryAndFragment(t *testing.T) {
 	}
 }
 
+func TestSigningKeyRotationAcceptsInFlightTokens(t *testing.T) {
+	store := newMemoryStore()
+	oldAuth, err := New(Config{
+		Store:  store,
+		Secret: "old-production-secret-with-enough-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	token, _, err := oldAuth.API().issueActionToken(ctx, oldAuth.API().passwordResetTokenKind(), "ada@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	state, err := oldAuth.API().signOAuthState(oauthStatePayload{
+		ID:           "state-id",
+		Provider:     "google",
+		Nonce:        "nonce",
+		PKCEVerifier: "verifier",
+		BindingHash:  "binding",
+		IssuedAt:     time.Now().UTC(),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedAuth, err := New(Config{
+		Store:           store,
+		Secret:          "new-production-secret-with-enough-entropy",
+		PreviousSecrets: []string{"old-production-secret-with-enough-entropy"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := rotatedAuth.API().consumeActionToken(ctx, rotatedAuth.API().passwordResetTokenKind(), token); err != nil {
+		t.Fatalf("in-flight action token failed after rotation: %v", err)
+	}
+	if _, err := rotatedAuth.API().verifyOAuthState(state); err != nil {
+		t.Fatalf("in-flight OAuth state failed after rotation: %v", err)
+	}
+	unrotatedAuth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "new-production-secret-with-enough-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := unrotatedAuth.API().verifyOAuthState(state); !errors.Is(err, ErrInvalidState) {
+		t.Fatalf("old OAuth state error = %v, want ErrInvalidState", err)
+	}
+}
+
 type testEmailSender struct {
 	verificationMessages []EmailVerificationMessage
 	resetMessages        []PasswordResetMessage

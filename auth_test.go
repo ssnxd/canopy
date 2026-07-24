@@ -58,6 +58,26 @@ func TestConfigRejectsUnknownEnvironmentAndInvalidLifetimes(t *testing.T) {
 	}
 }
 
+func TestConfigValidatesPreviousSecrets(t *testing.T) {
+	for name, previous := range map[string][]string{
+		"empty":     {""},
+		"too short": {"short"},
+		"current":   {"production-secret-with-enough-entropy"},
+		"duplicate": {"first-previous-secret-with-enough-entropy", "first-previous-secret-with-enough-entropy"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := New(Config{
+				Store:           newMemoryStore(),
+				Secret:          "production-secret-with-enough-entropy",
+				PreviousSecrets: previous,
+			})
+			if err == nil {
+				t.Fatal("New() error = nil, want invalid previous secrets rejected")
+			}
+		})
+	}
+}
+
 func TestConfigRequiresEmailSenderForRequiredVerification(t *testing.T) {
 	_, err := New(Config{
 		Store:                    newMemoryStore(),

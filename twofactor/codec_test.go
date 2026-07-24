@@ -1,8 +1,12 @@
 package twofactor
 
 import (
+	"context"
 	"encoding/base64"
 	"testing"
+
+	"github.com/ssnxd/canopy"
+	"github.com/ssnxd/canopy/store/memory"
 )
 
 func TestSecretCodecRoundTrip(t *testing.T) {
@@ -63,5 +67,67 @@ func TestSecretCodecKeySeparation(t *testing.T) {
 	}
 	if _, err := b.Decrypt(ciphertext); err == nil {
 		t.Fatal("a codec with a different secret decrypted the ciphertext")
+	}
+}
+
+func TestSecretCodecSupportsKeyRotation(t *testing.T) {
+	oldCodec, err := NewSecretCodec("old-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	ciphertext, err := oldCodec.Encrypt([]byte("secret"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotated, err := NewRotatingSecretCodec("new-secret", "old-secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	plaintext, err := rotated.Decrypt(ciphertext)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(plaintext) != "secret" {
+		t.Fatalf("plaintext = %q, want secret", plaintext)
+	}
+	newCiphertext, err := rotated.Encrypt([]byte("new-secret-value"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := oldCodec.Decrypt(newCiphertext); err == nil {
+		t.Fatal("old codec decrypted ciphertext created with the new key")
+	}
+}
+
+func TestChallengeSupportsSigningKeyRotation(t *testing.T) {
+	store := memory.New()
+	oldSecret := "old-production-secret-with-enough-entropy"
+	oldModule := New(Options{})
+	if _, err := canopy.New(canopy.Config{
+		Store:   store,
+		Secret:  oldSecret,
+		Modules: []canopy.Module{oldModule},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	token, err := oldModule.issueChallenge(context.Background(), "usr_rotation")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rotatedModule := New(Options{})
+	if _, err := canopy.New(canopy.Config{
+		Store:           store,
+		Secret:          "new-production-secret-with-enough-entropy",
+		PreviousSecrets: []string{oldSecret},
+		Modules:         []canopy.Module{rotatedModule},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	userID, err := rotatedModule.consumeChallenge(context.Background(), token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if userID != "usr_rotation" {
+		t.Fatalf("user id = %q, want usr_rotation", userID)
 	}
 }

@@ -92,10 +92,11 @@ const (
 )
 
 type Config struct {
-	Store       Store
-	Secret      string
-	Environment Environment
-	BasePath    string
+	Store           Store
+	Secret          string
+	PreviousSecrets []string
+	Environment     Environment
+	BasePath        string
 
 	DisableSignup            bool
 	RequireEmailVerification bool
@@ -137,7 +138,7 @@ func (c *Config) setDefaults() {
 		c.PasswordHasher = password.DefaultHasher()
 	}
 	if c.ProviderTokenCodec == nil {
-		c.ProviderTokenCodec = newProviderTokenCodec(c.Secret)
+		c.ProviderTokenCodec = newProviderTokenCodec(c.Secret, c.PreviousSecrets...)
 	}
 	if c.AuditLogger == nil {
 		c.AuditLogger = noopAuditLogger{}
@@ -184,6 +185,19 @@ func (c Config) validate() error {
 	}
 	if c.Secret == "" {
 		return fmt.Errorf("canopy: secret is required")
+	}
+	seenSecrets := map[string]bool{c.Secret: true}
+	for _, secret := range c.PreviousSecrets {
+		if secret == "" {
+			return fmt.Errorf("canopy: previous secrets must not be empty")
+		}
+		if c.Environment == Production && len(secret) < 32 {
+			return fmt.Errorf("canopy: production previous secrets must be at least 32 bytes")
+		}
+		if seenSecrets[secret] {
+			return fmt.Errorf("canopy: secrets must be unique")
+		}
+		seenSecrets[secret] = true
 	}
 	if c.RequireEmailVerification {
 		if _, noop := c.EmailSender.(noopEmailSender); noop {
