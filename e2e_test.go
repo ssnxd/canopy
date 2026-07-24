@@ -415,7 +415,8 @@ func TestE2EAdminWithPostgres(t *testing.T) {
 		t.Fatalf("impersonate status = %d, body = %s", imp.Code, imp.Body.String())
 	}
 	impCookie := cookieNamed(t, imp.Result().Cookies(), "canopy.session_token")
-	stop := postJSON(t, handler, "/admin/stop-impersonating", nil, []*http.Cookie{impCookie})
+	parentCookie := cookieNamed(t, imp.Result().Cookies(), "canopy.impersonation_parent")
+	stop := postJSON(t, handler, "/admin/stop-impersonating", nil, []*http.Cookie{impCookie, parentCookie})
 	if stop.Code != http.StatusOK {
 		t.Fatalf("stop status = %d, body = %s", stop.Code, stop.Body.String())
 	}
