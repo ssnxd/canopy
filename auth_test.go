@@ -44,6 +44,9 @@ func TestEmailSignInCreatesFreshTokensAndAuditsSuccess(t *testing.T) {
 	if signup.User.Email != "ada@example.com" {
 		t.Fatalf("email was not conservatively normalized: %q", signup.User.Email)
 	}
+	if signup.User.EmailVerified {
+		t.Fatal("email was marked verified without mailbox proof")
+	}
 	signin, err := auth.API().SignInEmail(ctx, SignInEmailInput{
 		Email:    "ada@example.com",
 		Password: "correct-password",

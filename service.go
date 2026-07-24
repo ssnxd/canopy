@@ -191,9 +191,6 @@ func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*Sessio
 		CreatedAt: now,
 		UpdatedAt: now,
 	}
-	if !s.cfg.RequireEmailVerification {
-		user.EmailVerified = true
-	}
 	if s.cfg.Hooks.BeforeUserCreate != nil {
 		if err := s.cfg.Hooks.BeforeUserCreate(user); err != nil {
 			return nil, "", err
@@ -544,7 +541,7 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 		return nil, err
 	}
 	email := normalizeEmail(profile.Email)
-	if email == "" {
+	if email == "" || !profile.EmailVerified {
 		return nil, ErrProviderFailure
 	}
 	if existing, err := s.cfg.Store.FindUserByEmail(ctx, email); err == nil && existing != nil {

@@ -295,6 +295,14 @@ func TestE2EOrganizationWithPostgres(t *testing.T) {
 
 	ownerCookie := e2eSignUp(t, handler, "Ada", "owner@example.com")
 	inviteeCookie := e2eSignUp(t, handler, "Grace", "member@example.com")
+	invitee, err := auth.API().Store().FindUserByEmail(context.Background(), "member@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	invitee.EmailVerified = true
+	if err := auth.API().Store().UpdateUser(context.Background(), invitee); err != nil {
+		t.Fatal(err)
+	}
 
 	create := postJSON(t, handler, "/organization/create", map[string]string{"name": "Acme Inc"}, []*http.Cookie{ownerCookie})
 	if create.Code != http.StatusOK {

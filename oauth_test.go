@@ -22,6 +22,7 @@ type fakeOAuthProvider struct {
 	lastVerifier    string
 	lastNonce       string
 	profileProvider string
+	emailUnverified bool
 	refreshErr      error
 	refreshedToken  *oauth2.Token
 }
@@ -81,7 +82,7 @@ func (p *fakeOAuthProvider) Profile(ctx context.Context, token *oauth2.Token, no
 		ProviderID:           providerID,
 		AccountID:            p.accountID,
 		Email:                p.email,
-		EmailVerified:        true,
+		EmailVerified:        !p.emailUnverified,
 		Name:                 "OAuth User",
 		Image:                "https://example.test/avatar.png",
 		AccessToken:          token.AccessToken,
@@ -310,6 +311,36 @@ func TestOAuthRejectsSameEmailAccountLinking(t *testing.T) {
 	})
 	if err != ErrAccountLinking {
 		t.Fatalf("err = %v, want ErrAccountLinking", err)
+	}
+}
+
+func TestOAuthRejectsUnverifiedProviderEmailForNewUser(t *testing.T) {
+	provider := &fakeOAuthProvider{
+		id:              "google",
+		email:           "unverified@example.com",
+		accountID:       "google-unverified-sub",
+		emailUnverified: true,
+	}
+	auth, err := New(Config{
+		Store:     newMemoryStore(),
+		Secret:    "dev-secret-with-enough-test-entropy",
+		Providers: []authoauth.Provider{provider},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	start, binding, err := auth.API().SignInSocial(context.Background(), SignInSocialInput{Provider: "google"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = auth.API().OAuthCallback(context.Background(), OAuthCallbackInput{
+		Provider:     "google",
+		Code:         "auth-code",
+		State:        stateFromURL(t, start.URL),
+		StateBinding: binding,
+	})
+	if err != ErrProviderFailure {
+		t.Fatalf("err = %v, want ErrProviderFailure", err)
 	}
 }
 

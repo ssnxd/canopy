@@ -245,6 +245,10 @@ func (m *Module) handleAcceptInvitation(w http.ResponseWriter, r *http.Request) 
 		canopy.WriteError(w, canopy.ErrInvitationInvalid)
 		return
 	}
+	if !data.User.EmailVerified {
+		canopy.WriteError(w, canopy.ErrUnverifiedEmail)
+		return
+	}
 	if !strings.EqualFold(strings.TrimSpace(invitation.Email), strings.TrimSpace(data.User.Email)) {
 		canopy.WriteError(w, canopy.ErrForbidden)
 		return

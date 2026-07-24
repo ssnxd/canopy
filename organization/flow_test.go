@@ -2,6 +2,7 @@ package organization_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -14,19 +15,21 @@ import (
 
 type fixture struct {
 	handler http.Handler
+	store   *memory.Store
 }
 
 func newFixture(t *testing.T) *fixture {
 	t.Helper()
+	store := memory.New()
 	auth, err := canopy.New(canopy.Config{
-		Store:   memory.New(),
+		Store:   store,
 		Secret:  "dev-secret-with-enough-test-entropy",
 		Modules: []canopy.Module{organization.New(organization.Options{})},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &fixture{handler: auth.Handler()}
+	return &fixture{handler: auth.Handler(), store: store}
 }
 
 func (f *fixture) do(t *testing.T, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
@@ -58,6 +61,14 @@ func (f *fixture) signUp(t *testing.T, name, email string) *http.Cookie {
 	}, nil)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("signup status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	user, err := f.store.FindUserByEmail(context.Background(), email)
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.EmailVerified = true
+	if err := f.store.UpdateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
 	}
 	for _, c := range rec.Result().Cookies() {
 		if c.Name == "canopy.session_token" {
@@ -168,6 +179,38 @@ func TestOrganizationOwnerCannotBeRemoved(t *testing.T) {
 	}, owner)
 	if remove.Code != http.StatusForbidden {
 		t.Fatalf("remove owner status = %d, want 403", remove.Code)
+	}
+}
+
+func TestOrganizationInvitationRequiresVerifiedEmail(t *testing.T) {
+	f := newFixture(t)
+	owner := f.signUp(t, "Ada", "ada@example.com")
+	invitee := f.signUp(t, "Grace", "grace@example.com")
+
+	create := f.do(t, http.MethodPost, "/organization/create", map[string]string{"name": "Acme"}, owner)
+	var org canopy.Organization
+	if err := json.NewDecoder(create.Body).Decode(&org); err != nil {
+		t.Fatal(err)
+	}
+	invite := f.do(t, http.MethodPost, "/organization/invite", map[string]string{
+		"organizationId": org.ID, "email": "grace@example.com", "role": organization.RoleMember,
+	}, owner)
+	var invitation canopy.Invitation
+	if err := json.NewDecoder(invite.Body).Decode(&invitation); err != nil {
+		t.Fatal(err)
+	}
+	user, err := f.store.FindUserByEmail(context.Background(), "grace@example.com")
+	if err != nil {
+		t.Fatal(err)
+	}
+	user.EmailVerified = false
+	if err := f.store.UpdateUser(context.Background(), user); err != nil {
+		t.Fatal(err)
+	}
+
+	accept := f.do(t, http.MethodPost, "/organization/accept-invitation", map[string]string{"invitationId": invitation.ID}, invitee)
+	if accept.Code != http.StatusForbidden {
+		t.Fatalf("unverified invitation status = %d, want 403", accept.Code)
 	}
 }
 
