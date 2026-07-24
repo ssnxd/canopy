@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -90,6 +91,7 @@ func (p *fakeOAuthProvider) Profile(ctx context.Context, token *oauth2.Token, no
 }
 
 func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
+	store := newMemoryStore()
 	provider := &fakeOAuthProvider{
 		id:        "google",
 		email:     "oauth@example.com",
@@ -101,7 +103,7 @@ func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
 		}).WithExtra(map[string]any{"scope": "openid email profile calendar"}),
 	}
 	auth, err := New(Config{
-		Store:     newMemoryStore(),
+		Store:     store,
 		Secret:    "dev-secret-with-enough-test-entropy",
 		Providers: []authoauth.Provider{provider},
 	})
@@ -123,6 +125,14 @@ func TestRefreshProviderTokenUpdatesAccount(t *testing.T) {
 		t.Fatal(err)
 	}
 	data := out.Result.Session
+	stored, err := store.FindAccountByUserProvider(ctx, data.User.ID, "google")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(stored.AccessToken, providerTokenEnvelopePrefix) ||
+		!strings.HasPrefix(stored.RefreshToken, providerTokenEnvelopePrefix) {
+		t.Fatalf("provider credentials were stored in plaintext: %#v", stored)
+	}
 	refreshed, err := auth.API().RefreshProviderToken(ctx, RefreshProviderTokenInput{
 		UserID:     data.User.ID,
 		ProviderID: "google",

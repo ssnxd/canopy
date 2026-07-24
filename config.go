@@ -102,6 +102,7 @@ type Config struct {
 	PasswordMinLength        int
 	PasswordMaxLength        int
 	PasswordHasher           password.Hasher
+	ProviderTokenCodec       ProviderTokenCodec
 	AuditLogger              AuditLogger
 	EmailSender              EmailSender
 	AccountLinkingPolicy     AccountLinkingPolicy
@@ -134,6 +135,9 @@ func (c *Config) setDefaults() {
 	}
 	if c.PasswordHasher == nil {
 		c.PasswordHasher = password.DefaultHasher()
+	}
+	if c.ProviderTokenCodec == nil {
+		c.ProviderTokenCodec = newProviderTokenCodec(c.Secret)
 	}
 	if c.AuditLogger == nil {
 		c.AuditLogger = noopAuditLogger{}

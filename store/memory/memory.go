@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/ssnxd/canopy"
+	"github.com/ssnxd/canopy/sessions"
 )
 
 // Store is an in-memory implementation of canopy.Store. It also
@@ -175,15 +176,20 @@ func (s *Store) UpdateAccount(ctx context.Context, account *canopy.Account) erro
 func (s *Store) CreateSession(ctx context.Context, session *canopy.Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	key := sessions.TokenDigest(session.Token)
+	if s.sessions[key] != nil {
+		return canopy.ErrConflict
+	}
 	cp := *session
-	s.sessions[session.Token] = &cp
+	cp.Token = ""
+	s.sessions[key] = &cp
 	return nil
 }
 
 func (s *Store) FindSessionByToken(ctx context.Context, token string) (*canopy.SessionData, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	session := s.sessions[token]
+	session := s.sessions[sessions.TokenDigest(token)]
 	if session == nil {
 		return nil, canopy.ErrNotFound
 	}
@@ -191,27 +197,32 @@ func (s *Store) FindSessionByToken(ctx context.Context, token string) (*canopy.S
 	if user == nil {
 		return nil, canopy.ErrNotFound
 	}
-	return &canopy.SessionData{User: *user, Session: *session}, nil
+	sessionCopy := *session
+	sessionCopy.Token = token
+	return &canopy.SessionData{User: *user, Session: sessionCopy}, nil
 }
 
 func (s *Store) UpdateSession(ctx context.Context, session *canopy.Session) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sessions[session.Token] == nil {
+	key := sessions.TokenDigest(session.Token)
+	if s.sessions[key] == nil {
 		return canopy.ErrNotFound
 	}
 	cp := *session
-	s.sessions[session.Token] = &cp
+	cp.Token = ""
+	s.sessions[key] = &cp
 	return nil
 }
 
 func (s *Store) DeleteSessionByToken(ctx context.Context, token string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.sessions[token] == nil {
+	key := sessions.TokenDigest(token)
+	if s.sessions[key] == nil {
 		return canopy.ErrNotFound
 	}
-	delete(s.sessions, token)
+	delete(s.sessions, key)
 	return nil
 }
 

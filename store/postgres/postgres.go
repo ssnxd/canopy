@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ssnxd/canopy"
+	"github.com/ssnxd/canopy/sessions"
 )
 
 type Store struct {
@@ -119,9 +120,9 @@ where id=$1`,
 
 func (s *Store) CreateSession(ctx context.Context, ses *canopy.Session) error {
 	_, err := s.db.ExecContext(ctx, `
-insert into session (id, user_id, token, expires_at, ip_address, user_agent, active_organization_id, impersonated_by, created_at, updated_at)
-values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-		ses.ID, ses.UserID, ses.Token, ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.ActiveOrganizationID, ses.ImpersonatedBy, ses.CreatedAt, ses.UpdatedAt)
+	insert into session (id, user_id, token, expires_at, ip_address, user_agent, active_organization_id, impersonated_by, created_at, updated_at)
+	values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+		ses.ID, ses.UserID, sessions.TokenDigest(ses.Token), ses.ExpiresAt, ses.IPAddress, ses.UserAgent, ses.ActiveOrganizationID, ses.ImpersonatedBy, ses.CreatedAt, ses.UpdatedAt)
 	return mapErr(err)
 }
 
@@ -132,14 +133,16 @@ select
 	se.id, se.user_id, se.token, se.expires_at, se.ip_address, se.user_agent, se.active_organization_id, se.impersonated_by, se.created_at, se.updated_at
 from session se
 join "user" u on u.id = se.user_id
-where se.token=$1`, token)
+	where se.token=$1`, sessions.TokenDigest(token))
 	var data canopy.SessionData
+	var storedToken string
 	if err := row.Scan(
 		&data.User.ID, &data.User.Name, &data.User.Email, &data.User.EmailVerified, &data.User.Image, &data.User.Role, &data.User.Banned, &data.User.BanReason, &data.User.BanExpiresAt, &data.User.CreatedAt, &data.User.UpdatedAt,
-		&data.Session.ID, &data.Session.UserID, &data.Session.Token, &data.Session.ExpiresAt, &data.Session.IPAddress, &data.Session.UserAgent, &data.Session.ActiveOrganizationID, &data.Session.ImpersonatedBy, &data.Session.CreatedAt, &data.Session.UpdatedAt,
+		&data.Session.ID, &data.Session.UserID, &storedToken, &data.Session.ExpiresAt, &data.Session.IPAddress, &data.Session.UserAgent, &data.Session.ActiveOrganizationID, &data.Session.ImpersonatedBy, &data.Session.CreatedAt, &data.Session.UpdatedAt,
 	); err != nil {
 		return nil, mapErr(err)
 	}
+	data.Session.Token = token
 	return &data, nil
 }
 
@@ -151,7 +154,7 @@ update session set expires_at=$2, ip_address=$3, user_agent=$4, active_organizat
 }
 
 func (s *Store) DeleteSessionByToken(ctx context.Context, token string) error {
-	res, err := s.db.ExecContext(ctx, `delete from session where token=$1`, token)
+	res, err := s.db.ExecContext(ctx, `delete from session where token=$1`, sessions.TokenDigest(token))
 	return mapRows(err, res)
 }
 
@@ -435,7 +438,8 @@ from session where user_id=$1 order by created_at`, userID)
 	var sessions []canopy.Session
 	for rows.Next() {
 		var se canopy.Session
-		if err := rows.Scan(&se.ID, &se.UserID, &se.Token, &se.ExpiresAt, &se.IPAddress, &se.UserAgent, &se.ActiveOrganizationID, &se.ImpersonatedBy, &se.CreatedAt, &se.UpdatedAt); err != nil {
+		var storedToken string
+		if err := rows.Scan(&se.ID, &se.UserID, &storedToken, &se.ExpiresAt, &se.IPAddress, &se.UserAgent, &se.ActiveOrganizationID, &se.ImpersonatedBy, &se.CreatedAt, &se.UpdatedAt); err != nil {
 			return nil, mapErr(err)
 		}
 		sessions = append(sessions, se)

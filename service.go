@@ -286,7 +286,7 @@ func (s *Service) RequestPasswordReset(ctx context.Context, in RequestPasswordRe
 		}
 		return err
 	}
-	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
+	account, err := s.findAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
 	if err != nil || account.Password == "" {
 		s.audit(ctx, AuditEvent{Type: "password_reset.requested_no_password_account", UserID: user.ID, Email: user.Email, Success: true})
 		return nil
@@ -326,7 +326,7 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	if err != nil {
 		return err
 	}
-	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
+	account, err := s.findAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
 	if err != nil || account.Password == "" {
 		return ErrInvalidToken
 	}
@@ -336,7 +336,7 @@ func (s *Service) ResetPassword(ctx context.Context, in ResetPasswordInput) erro
 	}
 	account.Password = hash
 	account.UpdatedAt = time.Now().UTC()
-	if err := s.cfg.Store.UpdateAccount(ctx, account); err != nil {
+	if err := s.updateAccount(ctx, account); err != nil {
 		return err
 	}
 	if err := s.cfg.Store.DeleteUserSessions(ctx, user.ID); err != nil {
@@ -474,7 +474,7 @@ func (s *Service) RefreshProviderToken(ctx context.Context, in RefreshProviderTo
 	if !ok {
 		return nil, ErrProviderFailure
 	}
-	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, in.UserID, in.ProviderID)
+	account, err := s.findAccountByUserProvider(ctx, in.UserID, in.ProviderID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return nil, ErrProviderAccountNotFound
@@ -506,7 +506,7 @@ func (s *Service) RefreshProviderToken(ctx context.Context, in RefreshProviderTo
 		account.Scope = scope
 	}
 	account.UpdatedAt = time.Now().UTC()
-	if err := s.cfg.Store.UpdateAccount(ctx, account); err != nil {
+	if err := s.updateAccount(ctx, account); err != nil {
 		return nil, err
 	}
 	s.audit(ctx, AuditEvent{Type: "oauth.token_refresh.succeeded", UserID: in.UserID, ProviderID: in.ProviderID, Success: true})
@@ -529,7 +529,7 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 	if profile.ProviderID != "" && profile.ProviderID != providerID {
 		return nil, ErrProviderFailure
 	}
-	account, err := s.cfg.Store.FindAccount(ctx, providerID, profile.AccountID)
+	account, err := s.findAccount(ctx, providerID, profile.AccountID)
 	if err == nil {
 		user, err := s.cfg.Store.FindUserByID(ctx, account.UserID)
 		if err != nil {
@@ -537,7 +537,7 @@ func (s *Service) signInOAuthProfile(ctx context.Context, providerID string, pro
 		}
 		updateAccountFromProfile(account, profile)
 		account.UpdatedAt = time.Now().UTC()
-		_ = s.cfg.Store.UpdateAccount(ctx, account)
+		_ = s.updateAccount(ctx, account)
 		return s.finishSignIn(ctx, *user, opt)
 	}
 	if err != nil && !errors.Is(err, ErrNotFound) {
@@ -603,7 +603,7 @@ func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SignIn
 	user, userErr := s.cfg.Store.FindUserByEmail(ctx, email)
 	var account *Account
 	if userErr == nil {
-		account, _ = s.cfg.Store.FindAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
+		account, _ = s.findAccountByUserProvider(ctx, user.ID, ProviderEmailPassword)
 	}
 	// Always run a password verify, even when the account is missing.
 	// This keeps the response time constant. It stops an attacker from
@@ -629,7 +629,7 @@ func (s *Service) SignInEmail(ctx context.Context, in SignInEmailInput) (*SignIn
 		if hash, hashErr := s.cfg.PasswordHasher.Hash(ctx, in.Password); hashErr == nil {
 			account.Password = hash
 			account.UpdatedAt = time.Now().UTC()
-			_ = s.cfg.Store.UpdateAccount(ctx, account)
+			_ = s.updateAccount(ctx, account)
 		}
 	}
 	result, err := s.finishSignIn(ctx, *user, SessionOptions{RememberMe: in.RememberMe, IPAddress: in.IPAddress, UserAgent: in.UserAgent})
@@ -823,13 +823,41 @@ func (s *Service) passwordEqualizerHash() string {
 }
 
 func (s *Service) createUserAccount(ctx context.Context, user *User, account *Account) error {
+	storedAccount, err := encryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+	if err != nil {
+		return err
+	}
 	if store, ok := s.cfg.Store.(userAccountStore); ok {
-		return store.CreateUserAccount(ctx, user, account)
+		return store.CreateUserAccount(ctx, user, storedAccount)
 	}
 	if err := s.cfg.Store.CreateUser(ctx, user); err != nil {
 		return err
 	}
-	return s.cfg.Store.CreateAccount(ctx, account)
+	return s.cfg.Store.CreateAccount(ctx, storedAccount)
+}
+
+func (s *Service) findAccount(ctx context.Context, providerID, accountID string) (*Account, error) {
+	account, err := s.cfg.Store.FindAccount(ctx, providerID, accountID)
+	if err != nil {
+		return nil, err
+	}
+	return decryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+}
+
+func (s *Service) findAccountByUserProvider(ctx context.Context, userID, providerID string) (*Account, error) {
+	account, err := s.cfg.Store.FindAccountByUserProvider(ctx, userID, providerID)
+	if err != nil {
+		return nil, err
+	}
+	return decryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+}
+
+func (s *Service) updateAccount(ctx context.Context, account *Account) error {
+	storedAccount, err := encryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+	if err != nil {
+		return err
+	}
+	return s.cfg.Store.UpdateAccount(ctx, storedAccount)
 }
 
 func normalizeEmail(email string) string {

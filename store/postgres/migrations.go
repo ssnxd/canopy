@@ -27,6 +27,10 @@ create table if not exists session (
 create index if not exists session_user_id_idx on session (user_id);
 create index if not exists session_expires_at_idx on session (expires_at);
 
+-- Session tokens created before digest-at-rest support are not distinguishable
+-- from bearer credentials safely. Revoke them during migration.
+delete from session where token not like 'sha256:%';
+
 create table if not exists account (
 	id text primary key,
 	user_id text not null references "user"(id) on delete cascade,
@@ -45,6 +49,12 @@ create table if not exists account (
 
 create unique index if not exists account_provider_account_unique on account (provider_id, account_id);
 create unique index if not exists account_user_provider_unique on account (user_id, provider_id);
+
+-- Provider credentials created before encrypted envelopes are revoked. Users
+-- can re-authorize the provider without exposing legacy plaintext at rest.
+update account set access_token = '' where access_token <> '' and access_token not like 'enc.v1.%';
+update account set refresh_token = '' where refresh_token <> '' and refresh_token not like 'enc.v1.%';
+update account set id_token = '' where id_token <> '' and id_token not like 'enc.v1.%';
 
 create table if not exists verification (
 	id text primary key,
