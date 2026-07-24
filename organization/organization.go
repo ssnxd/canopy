@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -22,7 +23,7 @@ type Options struct {
 }
 
 // Module adds organizations, members, roles, and invitations. It
-// implements canopy.Module and canopy.RouteModule.
+// implements canopy.Module, canopy.RouteModule, and canopy.SessionValidator.
 type Module struct {
 	authorizer        Authorizer
 	invitationTTL     time.Duration
@@ -70,6 +71,24 @@ func (m *Module) Routes() []canopy.Route {
 		{Method: http.MethodPost, Pattern: "/organization/update-member-role", RequireSession: true, Handler: http.HandlerFunc(m.handleUpdateMemberRole)},
 		{Method: http.MethodPost, Pattern: "/organization/remove-member", RequireSession: true, Handler: http.HandlerFunc(m.handleRemoveMember)},
 	}
+}
+
+// ValidateSession clears an active organization when the session user is no
+// longer a member. ActiveOrganizationID is session preference state, not an
+// authorization decision.
+func (m *Module) ValidateSession(ctx context.Context, data *canopy.SessionData) error {
+	orgID := data.Session.ActiveOrganizationID
+	if orgID == "" {
+		return nil
+	}
+	if _, err := m.store.FindMember(ctx, orgID, data.User.ID); err == nil {
+		return nil
+	} else if !errors.Is(err, canopy.ErrNotFound) {
+		return err
+	}
+	data.Session.ActiveOrganizationID = ""
+	data.Session.UpdatedAt = time.Now().UTC()
+	return m.core.Store().UpdateSession(ctx, &data.Session)
 }
 
 func (m *Module) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -372,12 +391,23 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, err)
 		return
 	}
+	if err := m.store.ClearActiveOrganization(r.Context(), req.OrganizationID, req.UserID); err != nil {
+		canopy.WriteError(w, err)
+		return
+	}
 	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "organization.member.removed", UserID: data.User.ID, Success: true})
 	canopy.WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
 }
 
 // authorize loads the acting user's membership and checks a permission.
 func (m *Module) authorize(ctx context.Context, orgID, userID, permission string) (*canopy.Member, error) {
+	return m.Authorize(ctx, orgID, userID, permission)
+}
+
+// Authorize verifies current organization membership and permission. An
+// application should call it for every tenant-scoped request rather than
+// treating ActiveOrganizationID as proof of access.
+func (m *Module) Authorize(ctx context.Context, orgID, userID, permission string) (*canopy.Member, error) {
 	if orgID == "" {
 		return nil, canopy.ErrInvalidInput
 	}

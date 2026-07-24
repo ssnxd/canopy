@@ -52,6 +52,7 @@ type OrganizationStore interface {
 	ListMembers(ctx context.Context, orgID string) ([]Member, error)
 	UpdateMember(ctx context.Context, member *Member) error
 	DeleteMember(ctx context.Context, orgID, userID string) error
+	ClearActiveOrganization(ctx context.Context, orgID, userID string) error
 
 	CreateInvitation(ctx context.Context, invitation *Invitation) error
 	FindInvitation(ctx context.Context, id string) (*Invitation, error)

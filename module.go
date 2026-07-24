@@ -38,6 +38,13 @@ type SignInInterceptor interface {
 	AfterPrimaryAuth(ctx context.Context, user User) (*StepUpChallenge, error)
 }
 
+// SessionValidator checks or refreshes module-owned session state whenever the
+// core resolves a session. The organization module uses it to prevent a stale
+// active organization from outliving membership.
+type SessionValidator interface {
+	ValidateSession(ctx context.Context, data *SessionData) error
+}
+
 // Route is one HTTP route that a module mounts.
 type Route struct {
 	Method  string

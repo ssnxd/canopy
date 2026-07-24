@@ -354,6 +354,13 @@ func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
 	return mapRows(err, res)
 }
 
+func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID string) error {
+	_, err := s.db.ExecContext(ctx, `
+	update session set active_organization_id='', updated_at=$3
+	where user_id=$1 and active_organization_id=$2`, userID, orgID, time.Now().UTC())
+	return mapErr(err)
+}
+
 func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	_, err := s.db.ExecContext(ctx, `
 insert into organization_invitation (id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at)

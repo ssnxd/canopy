@@ -117,6 +117,7 @@ type Service struct {
 	cfg          Config
 	providers    map[string]oauth.Provider
 	interceptors []SignInInterceptor
+	validators   []SessionValidator
 	dummyOnce    sync.Once
 	dummyHash    string
 }
@@ -140,6 +141,9 @@ func newService(cfg Config) *Service {
 	for _, module := range cfg.Modules {
 		if interceptor, ok := module.(SignInInterceptor); ok {
 			s.interceptors = append(s.interceptors, interceptor)
+		}
+		if validator, ok := module.(SessionValidator); ok {
+			s.validators = append(s.validators, validator)
 		}
 	}
 	return s
@@ -677,6 +681,11 @@ func (s *Service) GetSession(ctx context.Context, token string) (*SessionData, e
 	// after the user verifies the email.
 	if s.cfg.RequireEmailVerification && !data.User.EmailVerified {
 		return nil, ErrUnauthorized
+	}
+	for _, validator := range s.validators {
+		if err := validator.ValidateSession(ctx, data); err != nil {
+			return nil, ErrUnauthorized
+		}
 	}
 	if s.cfg.Session.UpdateAge > 0 && now.Sub(data.Session.UpdatedAt) >= s.cfg.Session.UpdateAge {
 		data.Session.ExpiresAt = now.Add(s.cfg.Session.Expiry)

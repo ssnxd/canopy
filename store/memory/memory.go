@@ -449,6 +449,18 @@ func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
 	return nil
 }
 
+func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, session := range s.sessions {
+		if session.UserID == userID && session.ActiveOrganizationID == orgID {
+			session.ActiveOrganizationID = ""
+			session.UpdatedAt = time.Now().UTC()
+		}
+	}
+	return nil
+}
+
 func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

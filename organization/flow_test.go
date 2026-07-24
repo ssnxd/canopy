@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
 	"github.com/ssnxd/canopy"
 	"github.com/ssnxd/canopy/organization"
@@ -151,11 +152,44 @@ func TestOrganizationInviteAcceptAndRBAC(t *testing.T) {
 	}
 
 	// The owner removes the member.
+	removedUserID := memberUserID(t, membersBody.Members, organization.RoleMember)
 	remove := f.do(t, http.MethodPost, "/organization/remove-member", map[string]string{
-		"organizationId": org.ID, "userId": memberUserID(t, membersBody.Members, organization.RoleMember),
+		"organizationId": org.ID, "userId": removedUserID,
 	}, owner)
 	if remove.Code != http.StatusOK {
 		t.Fatalf("remove status = %d, body = %s", remove.Code, remove.Body.String())
+	}
+	session := f.do(t, http.MethodGet, "/get-session", nil, invitee)
+	var sessionData canopy.SessionData
+	if err := json.NewDecoder(session.Body).Decode(&sessionData); err != nil {
+		t.Fatal(err)
+	}
+	if sessionData.Session.ActiveOrganizationID != "" {
+		t.Fatalf("removed member retained active organization %q", sessionData.Session.ActiveOrganizationID)
+	}
+
+	// Session validation also protects membership changes made outside the
+	// module route.
+	now := time.Now().UTC()
+	if err := f.store.CreateMember(context.Background(), &canopy.Member{
+		ID: "mem_external", OrganizationID: org.ID, UserID: removedUserID,
+		Role: organization.RoleMember, CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	setActive = f.do(t, http.MethodPost, "/organization/set-active", map[string]string{"organizationId": org.ID}, invitee)
+	if setActive.Code != http.StatusOK {
+		t.Fatalf("reset active status = %d, body = %s", setActive.Code, setActive.Body.String())
+	}
+	if err := f.store.DeleteMember(context.Background(), org.ID, removedUserID); err != nil {
+		t.Fatal(err)
+	}
+	session = f.do(t, http.MethodGet, "/get-session", nil, invitee)
+	if err := json.NewDecoder(session.Body).Decode(&sessionData); err != nil {
+		t.Fatal(err)
+	}
+	if sessionData.Session.ActiveOrganizationID != "" {
+		t.Fatalf("session validator retained stale organization %q", sessionData.Session.ActiveOrganizationID)
 	}
 }
 
