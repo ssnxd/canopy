@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestConfigRequiresProductionSecret(t *testing.T) {
@@ -18,6 +19,53 @@ func TestConfigRequiresProductionSecret(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected production secret validation error")
+	}
+}
+
+func TestConfigDefaultsToProductionSafety(t *testing.T) {
+	if _, err := New(Config{Store: newMemoryStore(), Secret: "short"}); err == nil {
+		t.Fatal("default environment accepted a short secret")
+	}
+	auth, err := New(Config{
+		Store:  newMemoryStore(),
+		Secret: "production-secret-with-enough-entropy",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if auth.cfg.Environment != Production || !auth.cfg.Session.Secure {
+		t.Fatalf("default config = %#v, want production with secure cookies", auth.cfg)
+	}
+}
+
+func TestConfigRejectsUnknownEnvironmentAndInvalidLifetimes(t *testing.T) {
+	_, err := New(Config{
+		Store:       newMemoryStore(),
+		Secret:      "production-secret-with-enough-entropy",
+		Environment: Environment("prod"),
+	})
+	if err == nil {
+		t.Fatal("unknown environment was accepted")
+	}
+	_, err = New(Config{
+		Store:         newMemoryStore(),
+		Secret:        "development-secret",
+		Environment:   Development,
+		OAuthStateTTL: -time.Minute,
+	})
+	if err == nil {
+		t.Fatal("negative oauth state lifetime was accepted")
+	}
+}
+
+func TestConfigRequiresEmailSenderForRequiredVerification(t *testing.T) {
+	_, err := New(Config{
+		Store:                    newMemoryStore(),
+		Secret:                   "production-secret-with-enough-entropy",
+		RequireEmailVerification: true,
+	})
+	if err == nil {
+		t.Fatal("required email verification accepted the no-op sender")
 	}
 }
 

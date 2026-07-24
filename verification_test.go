@@ -84,7 +84,6 @@ func TestActionTokensRejectWrongPurposeAndExpiry(t *testing.T) {
 		Store:                    newMemoryStore(),
 		Secret:                   "dev-secret-with-enough-test-entropy",
 		RequireEmailVerification: true,
-		EmailVerificationTTL:     -time.Minute,
 		EmailSender:              sender,
 	})
 	if err != nil {
@@ -102,7 +101,17 @@ func TestActionTokensRejectWrongPurposeAndExpiry(t *testing.T) {
 	if len(sender.verificationMessages) != 1 {
 		t.Fatalf("verification messages = %d, want 1", len(sender.verificationMessages))
 	}
-	if _, err := auth.API().VerifyEmail(ctx, VerifyEmailInput{Token: sender.verificationMessages[0].Token}); !errors.Is(err, ErrExpiredToken) {
+	expiredToken, err := auth.API().signActionToken(actionTokenPayload{
+		ID:        "expired",
+		Purpose:   verificationPurposeEmail,
+		Email:     "ada@example.com",
+		ExpiresAt: time.Now().Add(-time.Minute),
+		IssuedAt:  time.Now().Add(-2 * time.Minute),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := auth.API().VerifyEmail(ctx, VerifyEmailInput{Token: expiredToken}); !errors.Is(err, ErrExpiredToken) {
 		t.Fatalf("expired token err = %v, want ErrExpiredToken", err)
 	}
 

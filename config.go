@@ -122,7 +122,7 @@ type Config struct {
 
 func (c *Config) setDefaults() {
 	if c.Environment == "" {
-		c.Environment = Development
+		c.Environment = Production
 	}
 	if c.BasePath == "" {
 		c.BasePath = "/"
@@ -173,14 +173,51 @@ func (c Config) validate() error {
 	if c.Store == nil {
 		return errors.New("canopy: store is required")
 	}
-	if c.Environment == Production && len(c.Secret) < 32 {
-		return fmt.Errorf("canopy: production secret must be at least 32 bytes")
+	switch c.Environment {
+	case Development:
+	case Production:
+		if len(c.Secret) < 32 {
+			return fmt.Errorf("canopy: production secret must be at least 32 bytes")
+		}
+	default:
+		return fmt.Errorf("canopy: invalid environment %q", c.Environment)
 	}
 	if c.Secret == "" {
 		return fmt.Errorf("canopy: secret is required")
 	}
+	if c.RequireEmailVerification {
+		if _, noop := c.EmailSender.(noopEmailSender); noop {
+			return fmt.Errorf("canopy: email sender is required when email verification is required")
+		}
+	}
 	if c.PasswordMinLength < 1 || c.PasswordMaxLength < c.PasswordMinLength {
 		return fmt.Errorf("canopy: invalid password length bounds")
+	}
+	if c.OAuthStateTTL <= 0 || c.EmailVerificationTTL <= 0 || c.PasswordResetTTL <= 0 {
+		return fmt.Errorf("canopy: token lifetimes must be positive")
+	}
+	if c.Session.Expiry <= 0 || c.Session.BrowserSessionMaxAge <= 0 {
+		return fmt.Errorf("canopy: session lifetimes must be positive")
+	}
+	if c.Session.UpdateAge < 0 || c.Session.UpdateAge >= c.Session.Expiry {
+		return fmt.Errorf("canopy: session update age must be non-negative and shorter than session expiry")
+	}
+	if !c.Session.DisableAbsoluteExpiry && c.Session.AbsoluteMaxAge <= 0 {
+		return fmt.Errorf("canopy: absolute session lifetime must be positive")
+	}
+	if !validCookieName(c.Session.CookieName) || !validCookieName(c.OAuthStateCookieName) {
+		return fmt.Errorf("canopy: invalid cookie name")
+	}
+	if c.Session.CookieName == c.OAuthStateCookieName {
+		return fmt.Errorf("canopy: session and oauth state cookie names must differ")
+	}
+	if c.Session.SameSite == http.SameSiteNoneMode && !c.Session.Secure {
+		return fmt.Errorf("canopy: SameSite=None cookies must be secure")
+	}
+	for _, origin := range c.TrustedOrigins {
+		if !validOrigin(origin) {
+			return fmt.Errorf("canopy: invalid trusted origin %q", origin)
+		}
 	}
 	seen := map[string]bool{}
 	for _, provider := range c.Providers {
@@ -203,6 +240,27 @@ func (c Config) validate() error {
 		moduleSeen[module.ID()] = true
 	}
 	return nil
+}
+
+func validCookieName(name string) bool {
+	if name == "" {
+		return false
+	}
+	return !strings.ContainsAny(name, "()<>@,;:\\\"/[]?={} \t\r\n")
+}
+
+func validOrigin(origin string) bool {
+	if origin == "" || strings.TrimSpace(origin) != origin {
+		return false
+	}
+	u, err := url.Parse(origin)
+	if err != nil || (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+		return false
+	}
+	if u.Path != "" || u.RawQuery != "" || u.Fragment != "" {
+		return false
+	}
+	return origin == u.Scheme+"://"+u.Host
 }
 
 func (c Config) CheckOrigin(r *http.Request) bool {
