@@ -2,23 +2,105 @@
 
 All notable changes to Canopy will be documented in this file.
 
-Canopy follows semantic versioning after the first stable release. Until v1.0.0, public APIs may change when needed to improve the v1 design.
+Canopy follows semantic versioning after the first stable release. Until
+v1.0.0, public APIs may change when needed to improve the v1 design.
 
 ## [Unreleased]
 
+### Security
+
+- Store session tokens as SHA-256 digests and OAuth provider credentials as
+  AES-256-GCM ciphertext.
+- Require parent-session proof before restoring an administrator after
+  impersonation.
+- Require verified OAuth email claims for email-based identity decisions and
+  preserve existing verified-email state.
+- Prevent TOTP replay, atomically consume backup codes, and require recent
+  authentication for sensitive two-factor changes.
+- Atomically replace and consume password reset tokens, update credentials,
+  revoke sessions, and invalidate sibling tokens in the built-in stores.
+- Bound Argon2id verification parameters and validate Apple P-256 client-secret
+  signing keys and lifetimes.
+- Revalidate active organization membership and prevent concurrent changes
+  from removing or demoting the last owner.
+- Trust forwarded client IP headers only from configured proxy IPs or CIDRs.
+- Add strict, bounded request parsing, defensive browser response headers, and
+  safe callback URL construction.
+- Add staged key rotation with `Config.PreviousSecrets`.
+- Restrict modules to non-secret runtime configuration and purpose-separated
+  keys.
+
 ### Added
 
-- Build-tagged Postgres e2e tests for email/password and OAuth HTTP flows.
+- `Auth.OptionalSession` and `Auth.RequireSession`, with matching service
+  methods.
+- `ValidationError` and field-level HTTP error details.
+- `Config.ProviderTokenCodec`, `HookErrorHandler`, `TrustedProxies`,
+  `PreviousSecrets`, and `Modules`.
+- `SessionValidator`, `RuntimeConfig`, and `ModuleKeyring` module APIs.
+- Atomic organization and two-factor store operations.
+- Versioned Postgres migrations, `postgres.Migrations`, and the
+  `canopy_schema_migration` history table.
+- `Service.CleanupExpired` and store methods for expired session and
+  verification cleanup.
+- Build-tagged Postgres end-to-end tests and CI checks for formatting, race
+  detection, vet, vulnerabilities, and release configuration.
+- Security policy, production deployment checklist, and security/DX audit
+  report.
+
+### Changed
+
+- The zero-value environment now defaults to `Production`; local development
+  must select `canopy.Development` explicitly.
+- `BasePath` now controls request routing and default cookie scope. Mount the
+  handler at that path without `http.StripPrefix`.
+- `Middleware` is deprecated because it has optional-session semantics.
+- `Store` now requires expired-session cleanup, verification replacement, and
+  identifier cleanup methods.
+- `OrganizationStore` and `TwoFactorStore` now require atomic security
+  operations. Organization roles are validated against built-in or configured
+  assignable roles.
+- `Core.Config` returns `RuntimeConfig`; modules use `ModuleKeys`,
+  `HashPassword`, and `ClientIP` instead of root secrets or concrete config.
+- OAuth providers may implement `oauth.Validator`; built-in providers validate
+  configuration during `canopy.New` and cache successful OIDC discovery.
+- After-hooks run after committed state and report failures through
+  `HookErrorHandler` instead of returning a false operation failure.
+- Postgres migrations are ordered and tracked instead of exposed as one
+  unversioned SQL constant.
 
 ### Fixed
 
-- Postgres-backed user/account provisioning now runs in one transaction when Canopy creates a new account.
+- Preserve refresh and identity tokens when an OAuth provider omits a
+  replacement on a later login.
+- Normalize Postgres not-found, unique-conflict, and storage failures to Canopy
+  typed errors and stable HTTP statuses.
+- Avoid stale active organization state after membership removal.
+- Return stable field validation details instead of requiring error-string
+  parsing.
+
+### Upgrade notes
+
+- Run all Postgres migrations before serving the new build. Migration 3 revokes
+  legacy plaintext sessions and clears legacy plaintext provider credentials;
+  affected users must sign in or authorize again.
+- Generate a production secret of at least 32 random bytes. If rotating an
+  existing secret, retain the old value in `PreviousSecrets` until signed
+  tokens expire and persistent ciphertext has been rewrapped.
+- Update custom stores for the expanded `Store`, `OrganizationStore`, and
+  `TwoFactorStore` contracts. Security-sensitive methods documented as atomic
+  must use a transaction or equivalent compare-and-write primitive.
+- Replace `http.StripPrefix` mounting with `Config.BasePath`, and replace
+  ambiguous `Middleware` use with `OptionalSession` or `RequireSession`.
+- Update modules for `RuntimeConfig`, purpose-separated keys, password hashing,
+  and trusted client IP access. The removed `AccountLinkingPolicy` and
+  `sessions.Codec` APIs had no effective behavior.
 
 ### Planned
 
-- Transactional store APIs for atomic user/account/session creation.
 - Live Google and Apple OAuth integration tests.
-- Account linking confirmation flow.
+- Explicit account-linking confirmation flow.
+- Magic links and passkeys.
 - Additional OAuth providers.
 - Email provider examples.
 - MySQL and SQLite stores.
@@ -27,27 +109,20 @@ Canopy follows semantic versioning after the first stable release. Until v1.0.0,
 
 ### Added
 
-- Root `canopy` package with `New`, `Auth`, `Service`, `Handler`, and `Middleware`.
+- Root `canopy` package with `New`, `Auth`, `Service`, `Handler`, and
+  `Middleware`.
 - Email/password sign-up and sign-in.
 - Argon2id password hashing through the `password.Hasher` interface.
-- Email verification tokens and routes.
-- Password reset tokens and routes.
-- Server-side opaque sessions.
-- Session cookie helpers.
-- Session lookup, refresh-age extension, sign-out, and user-wide revocation.
-- Google OAuth provider.
-- Apple OAuth provider.
-- Apple ES256 client-secret JWT helper.
-- OAuth state signing, state cookie binding, PKCE, nonce validation, and replay prevention.
-- Provider access-token refresh API.
-- Audit logging interface.
-- App hooks for user creation, sign-in, sign-out, OAuth, email verification, and password reset.
-- Postgres store and migrations.
-- Detailed README and package documentation.
+- Email verification and password reset flows.
+- Server-side opaque sessions, cookies, lookup, refresh-age extension,
+  sign-out, and user-wide revocation.
+- Google and Apple OAuth providers with OIDC verification, PKCE, nonce, signed
+  state, cookie binding, replay prevention, and provider token refresh.
+- Audit logging, hooks, Postgres storage, migrations, and package
+  documentation.
 
-### Known Limitations
+### Known limitations
 
-- User/account/session creation is not yet transactional.
-- OAuth tests use fake providers; live provider tests are still planned.
-- Email delivery is callback-based through `EmailSender`; no first-party email provider package is included yet.
-- Account linking is safely rejected but the confirmation UX/API is not implemented yet.
+- Live provider tests are not included.
+- Email delivery is callback-based through `EmailSender`.
+- Account linking is rejected without a first-party confirmation flow.

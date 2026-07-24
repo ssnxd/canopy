@@ -8,6 +8,8 @@ The long-term goal is to support the full Better Auth feature surface in Go over
 
 Project docs:
 
+- [Security policy and deployment checklist](SECURITY.md)
+- [Security and developer-experience audit](SECURITY_AUDIT.md)
 - [Changelog](CHANGELOG.md)
 - [Contributing](CONTRIBUTING.md)
 - [License](LICENSE)
@@ -66,6 +68,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"time"
 
 	"github.com/ssnxd/canopy"
 	"github.com/ssnxd/canopy/oauth"
@@ -89,6 +92,7 @@ func main() {
 		Store:       store,
 		Secret:      os.Getenv("CANOPY_SECRET"),
 		Environment: canopy.Production,
+		BasePath:    "/auth",
 		TrustedOrigins: []string{
 			"https://app.example.com",
 		},
@@ -96,7 +100,7 @@ func main() {
 			google.Provider{
 				ClientID:     os.Getenv("GOOGLE_CLIENT_ID"),
 				ClientSecret: os.Getenv("GOOGLE_CLIENT_SECRET"),
-				RedirectURL:  "https://api.example.com/callback/google",
+				RedirectURL:  "https://api.example.com/auth/callback/google",
 			},
 		},
 	})
@@ -105,17 +109,21 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
-	mux.Handle("/auth/", http.StripPrefix("/auth", auth.Handler()))
-	mux.Handle("/api/me", auth.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		session, ok := canopy.SessionFromContext(r.Context())
-		if !ok {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return
-		}
+	mux.Handle("/auth/", auth.Handler())
+	mux.Handle("/api/me", auth.RequireSession(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		session, _ := canopy.SessionFromContext(r.Context())
 		_ = json.NewEncoder(w).Encode(session.User)
 	})))
 
-	log.Fatal(http.ListenAndServe(":8080", mux))
+	server := &http.Server{
+		Addr:              ":8080",
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+		ReadTimeout:       15 * time.Second,
+		WriteTimeout:      30 * time.Second,
+		IdleTimeout:       60 * time.Second,
+	}
+	log.Fatal(server.ListenAndServe())
 }
 ```
 
@@ -137,6 +145,16 @@ store := postgres.New(db)
 err := store.Migrate(ctx)
 ```
 
+`Migrate` serializes migration runs with a Postgres advisory lock and records
+applied versions in `canopy_schema_migration`. Deployments with an external
+migration runner can read the same ordered migrations with
+`postgres.Migrations()`.
+
+Migration 3 protects credentials at rest. It revokes legacy plaintext session
+tokens and clears legacy plaintext OAuth credentials because they cannot be
+safely converted without exposing the bearer values. Plan for users to sign in
+or re-authorize again when upgrading an existing database.
+
 Important constraints and indexes:
 
 - Unique normalized user email: `lower(email)`.
@@ -146,26 +164,35 @@ Important constraints and indexes:
 - Foreign keys from `session.user_id` and `account.user_id` to `user.id`.
 - Expiry indexes for session and verification cleanup.
 
+Schedule expired-record cleanup:
+
+```go
+err := auth.API().CleanupExpired(ctx, time.Now())
+```
+
 ## Configuration
 
 ```go
 type Config struct {
-	Store       canopy.Store
-	Secret      string
-	Environment canopy.Environment
-	BasePath    string
+	Store           canopy.Store
+	Secret          string
+	PreviousSecrets []string
+	Environment     canopy.Environment
+	BasePath        string
 
 	DisableSignup            bool
 	RequireEmailVerification bool
 	PasswordMinLength        int
 	PasswordMaxLength        int
 	PasswordHasher           password.Hasher
+	ProviderTokenCodec       canopy.ProviderTokenCodec
 
-	AuditLogger          canopy.AuditLogger
-	EmailSender          canopy.EmailSender
-	AccountLinkingPolicy canopy.AccountLinkingPolicy
+	AuditLogger      canopy.AuditLogger
+	HookErrorHandler canopy.HookErrorHandler
+	EmailSender      canopy.EmailSender
 
 	TrustedOrigins     []string
+	TrustedProxies     []string
 	DisableOriginCheck bool
 
 	Providers            []oauth.Provider
@@ -174,6 +201,8 @@ type Config struct {
 	EmailVerificationTTL time.Duration
 	PasswordResetTTL     time.Duration
 
+	Modules []canopy.Module
+
 	Session sessions.Config
 	Hooks   canopy.Hooks
 }
@@ -181,8 +210,9 @@ type Config struct {
 
 Defaults:
 
-- Environment: `development`.
-- Password length: 8 to 128 characters.
+- Environment: `production`. Set `canopy.Development` explicitly for local development.
+- Base path: `/`.
+- Password length: 8 to 128 bytes.
 - Password hashing: Argon2id.
 - Session expiry: 7 days.
 - Session refresh/update age: 1 day.
@@ -195,20 +225,34 @@ Defaults:
 
 Production requirements:
 
-- `Secret` must be at least 32 bytes in production.
+- `Secret` and every `PreviousSecrets` entry must be at least 32 bytes in production and must be unique.
 - Cookies are `Secure` in production.
-- Set `TrustedOrigins` for browser-facing deployments.
+- `RequireEmailVerification` requires a non-default `EmailSender`.
+- Set `TrustedOrigins` for browser-facing deployments. Keep origin checking enabled.
+- Only list reverse proxies you operate in `TrustedProxies`; forwarded client IP headers from other peers are ignored.
 - Apply rate limiting before Canopy handlers in browser-facing deployments.
+
+`PreviousSecrets` supports staged rotation for signed tokens and encrypted
+provider or two-factor data. New data uses `Secret`; reads also try previous
+keys. Keep old keys until their signed tokens expire and persisted encrypted
+data has been rewrapped. For independent key management, provide
+`ProviderTokenCodec` and the two-factor module's `Codec`.
 
 ## HTTP API
 
 Mount the handler:
 
 ```go
-mux.Handle("/auth/", http.StripPrefix("/auth", auth.Handler()))
+auth, err := canopy.New(canopy.Config{
+	Store:    store,
+	Secret:   os.Getenv("CANOPY_SECRET"),
+	BasePath: "/auth",
+})
+mux.Handle("/auth/", auth.Handler())
 ```
 
-The examples below assume the handler is mounted at `/auth`.
+`BasePath` controls routing and cookie scope. Do not also strip the prefix. The
+examples below assume the handler uses `BasePath: "/auth"`.
 
 ### `POST /auth/sign-up/email`
 
@@ -234,7 +278,7 @@ Response:
     "id": "usr_...",
     "name": "Ada Lovelace",
     "email": "ada@example.com",
-    "emailVerified": true,
+    "emailVerified": false,
     "image": "https://example.com/avatar.png",
     "createdAt": "...",
     "updatedAt": "..."
@@ -251,7 +295,11 @@ Response:
 
 Also sets the `canopy.session_token` cookie.
 
-When `RequireEmailVerification` is enabled, sign-up creates the user with `emailVerified=false`, creates a one-time verification token, and calls `EmailSender.SendEmailVerification`. Email/password sign-in returns `UNVERIFIED_EMAIL` until the token is verified.
+Sign-up creates the user with `emailVerified=false`; password possession is not
+proof that the email address is controlled by the user. When
+`RequireEmailVerification` is enabled, Canopy creates a one-time verification
+token, calls `EmailSender.SendEmailVerification`, and returns
+`UNVERIFIED_EMAIL` from email/password sign-in until verification succeeds.
 
 Sign-up still sets a session cookie, but the session is inactive until the user verifies the email. `GetSession` and the middleware return unauthorized for an unverified user. The same session becomes active after verification, so the user does not sign in again.
 
@@ -488,8 +536,14 @@ auth, err := canopy.New(canopy.Config{...})
 ```go
 api := auth.API()
 handler := auth.Handler()
-middleware := auth.Middleware(next)
+optionalSession := auth.OptionalSession(next)
+requiredSession := auth.RequireSession(next)
 ```
+
+`OptionalSession` always calls the next handler and adds a session to the
+context only when one is valid. `RequireSession` returns Canopy's stable 401
+JSON response without calling the next handler when authentication fails.
+`Middleware` remains as a deprecated alias for `OptionalSession`.
 
 ### Email/password
 
@@ -730,7 +784,11 @@ Endpoints (mounted under the auth handler, all require a session):
 - `POST /organization/update-member-role` — change a member role.
 - `POST /organization/remove-member` — remove a member.
 
-Roles are `owner`, `admin`, and `member`. The default `Authorizer` maps roles to permissions. Set `Options.Authorizer` for custom access control. The owner cannot be removed and only an owner can change an owner.
+Roles are `owner`, `admin`, and `member`. The default `Authorizer` maps roles to
+permissions. Set `Options.Authorizer` for custom access control and
+`Options.AssignableRoles` to add application-defined roles. Canopy rejects
+unknown roles, verifies the accepting user's email, and atomically prevents
+demoting or removing the last owner.
 
 An invitation returns a token, which is its id. Your application delivers the invitation link to the invitee. The invitee accepts it while signed in with the invited email address. Read the active organization from `SessionData.Session.ActiveOrganizationID`.
 
@@ -784,7 +842,7 @@ func rateLimit(next http.Handler) http.Handler {
 }
 
 mux := http.NewServeMux()
-mux.Handle("/auth/", rateLimit(http.StripPrefix("/auth", auth.Handler())))
+mux.Handle("/auth/", rateLimit(auth.Handler()))
 ```
 
 For email/password sign-in, limit by IP address and normalized email where practical. In multi-instance deployments, use shared state at the gateway or middleware layer so attempts are counted consistently across instances.
@@ -809,7 +867,9 @@ Each message includes:
 - `CallbackURL`
 - `ExpiresAt`
 
-`URL` is built by appending `?token=...` or `&token=...` to `CallbackURL`. If you prefer to build links yourself, use `Token` directly.
+`URL` is built by parsing `CallbackURL`, adding the URL-escaped token query
+parameter, and preserving existing query parameters and fragments. If you
+prefer to build links yourself, use `Token` directly.
 
 Canopy validates `CallbackURL` before it builds the link. Canopy keeps a relative path or a URL on a trusted origin. Canopy drops any other URL and leaves `URL` and `CallbackURL` empty. `Token` stays available in that case. Add your web origin to `TrustedOrigins` to use absolute callback URLs. This prevents an attacker from delivering a one-time token to a host that they control.
 
@@ -841,7 +901,6 @@ Canopy emits events for:
 - Email verification success or failure.
 - Password reset requested.
 - Password reset success or failure.
-- Rate-limited sign-in attempts.
 - OAuth callback success.
 - OAuth callback failure.
 - Provider token refresh success.
@@ -866,6 +925,12 @@ type Hooks struct {
 
 Hooks are app-level callbacks. Audit logging is separate and should be used for security telemetry.
 
+`BeforeUserCreate` runs before persistence and can reject the operation. Every
+`After...` hook runs after the relevant state is committed. An after-hook error
+does not turn a successful write into a false failure; Canopy sends it to
+`Config.HookErrorHandler`. Configure that handler to report hook failures to
+your logs or error monitor.
+
 ## Modules
 
 A module is an optional feature that plugs into the handler and the service. The built-in features use this seam. A third-party plugin uses the same seam. Add a module through `Config.Modules`.
@@ -881,10 +946,17 @@ A module can also implement optional capabilities:
 
 - `RouteModule` mounts HTTP routes under the handler.
 - `SignInInterceptor` pauses session creation after primary authentication. The two-factor module uses this to require a second step.
+- `SessionValidator` revalidates module-owned session state. The organization module uses this to reject stale active memberships.
 
-`Core` is the narrow facade that a module depends on. It gives access to the store, the config, session creation, request authentication, and audit logging. A module reads an optional store capability with a type assertion, and it fails fast in `Init` when the store does not support it.
+`Core` is the narrow facade that a module depends on. It exposes the store,
+non-secret `RuntimeConfig`, purpose-separated `ModuleKeys`, password hashing,
+trusted client IP resolution, session operations, and audit logging. Root
+configuration secrets and provider configuration are not exposed. Modules are
+still trusted code because `Store` can contain sensitive application data.
 
-The built-in two-factor, organization, and admin features are modules. They ship in later releases.
+The built-in two-factor, organization, and admin features are available today.
+Each fails fast in `Init` when the configured store lacks its required
+capability.
 
 ## Store Interface
 
@@ -907,16 +979,35 @@ type Store interface {
 	UpdateSession(ctx context.Context, session *canopy.Session) error
 	DeleteSessionByToken(ctx context.Context, token string) error
 	DeleteUserSessions(ctx context.Context, userID string) error
+	DeleteExpiredSessions(ctx context.Context, now time.Time) error
 
 	CreateVerification(ctx context.Context, verification *canopy.Verification) error
+	ReplaceVerification(ctx context.Context, verification *canopy.Verification) error
 	ConsumeVerification(ctx context.Context, identifier, value string, now time.Time) (*canopy.Verification, error)
+	DeleteVerificationsByIdentifier(ctx context.Context, identifier string) error
 	DeleteExpiredVerifications(ctx context.Context, now time.Time) error
 }
 ```
 
-Custom stores should return Canopy typed errors where possible, especially `ErrNotFound` and `ErrConflict`.
+Custom stores should return Canopy typed errors, especially `ErrNotFound`,
+`ErrConflict`, and `ErrStorageFailure`. The built-in modules require additional
+interfaces such as `canopy.TwoFactorStore`, `canopy.OrganizationStore`, and
+`canopy.AdminStore`. Methods documented as atomic must perform their complete
+compare-and-write operation in one transaction.
 
-A module can require an optional store capability, such as `canopy.TwoFactorStore`. The Postgres store and the in-memory store (`store/memory`) implement the core store and the built-in capabilities. Use `store/memory` for tests and local development. It is not durable.
+The Postgres store and the in-memory store (`store/memory`) implement the core
+store and the built-in capabilities. They also provide atomic user/account
+creation and password reset operations discovered by Canopy. Custom stores
+should provide methods with the same signatures as `CreateUserAccount` and
+`ApplyPasswordReset`:
+
+```go
+CreateUserAccount(ctx context.Context, user *canopy.User, account *canopy.Account) error
+ApplyPasswordReset(ctx context.Context, identifier, value string, now time.Time, account *canopy.Account) error
+```
+
+Otherwise Canopy uses the portable multi-call fallback.
+Use `store/memory` for tests and local development. It is not durable.
 
 ## Data Model
 
@@ -1019,34 +1110,50 @@ Canopy exposes typed sentinel errors:
 - `ErrForbidden`
 - `ErrUserBanned`
 - `ErrInvalidTwoFactorCode`
+- `ErrRecentAuthentication`
 - `ErrOrganizationNotFound`
 - `ErrNotOrganizationMember`
 - `ErrInvitationInvalid`
+- `ErrLastOrganizationOwner`
 
 Use `errors.Is(err, canopy.ErrInvalidCredentials)` rather than comparing error strings.
+Invalid input may also be a `*canopy.ValidationError`; its `Fields` map is
+returned by the HTTP API as stable field-level details.
 
 ## Security Defaults
 
 - Argon2id password hashing.
+- Bounded Argon2id parameters when verifying stored hashes.
 - Opaque random session tokens generated with `crypto/rand`.
+- SHA-256 session-token digests at rest.
+- AES-256-GCM encryption of OAuth provider credentials at rest by default.
 - Server-side session storage.
 - Fresh session token after every successful authentication.
+- Absolute and sliding session lifetimes.
 - HttpOnly session cookies.
 - SameSite=Lax by default.
 - Cross-origin request checks use the Origin header and Sec-Fetch metadata.
 - Secure cookies in production.
-- Production secret length validation.
+- Production-safe environment defaults and secret/configuration validation.
+- Forwarded client IPs accepted only from configured trusted proxies.
 - Conservative email normalization.
 - OAuth PKCE.
 - OAuth nonce validation.
+- OAuth provider configuration validation and cached OIDC discovery.
+- Verified provider email claims required before email-based account decisions.
 - Signed state.
 - State cookie binding.
 - Server-side state replay prevention.
 - Signed one-time email verification tokens.
 - Signed one-time password reset tokens.
+- Latest-token-only password reset with atomic consumption and session revocation in built-in stores.
+- TOTP replay prevention, one-time backup codes, and recent-authentication requirements for two-factor changes.
+- Parent-session proof for ending admin impersonation.
+- Last-owner protection and active-membership revalidation for organizations.
 - Callback and OAuth redirect URLs are limited to trusted origins.
-- Password reset revokes existing sessions.
+- Strict, size-bounded request parsing and defensive browser response headers.
 - Typed errors mapped to stable JSON codes.
+- Staged key rotation through `PreviousSecrets`.
 
 ## Important Caveats
 
@@ -1054,9 +1161,14 @@ Account linking:
 
 Canopy does not silently link accounts by email. If a user signs up with email/password and later signs in with Google using the same email, Canopy returns `ErrAccountLinking`. This avoids the common security footgun of treating “same email” as proof of same identity across providers. Build an explicit confirmation flow for linking.
 
-Transactions:
+Custom stores:
 
-The current `Store` interface performs user, account, and session writes as separate calls. The Postgres adapter relies on constraints, but a future hardening pass should add store-level transactional creation APIs so user/account/session creation is atomic.
+Canopy can only provide the same atomicity as the configured store. The
+Postgres and memory adapters implement atomic account provisioning, password
+reset, two-factor enrollment and consumption, organization creation,
+invitation acceptance, role protection, and member removal. Custom stores must
+honor the atomic method contracts and should implement the optional atomic
+user/account and password-reset capabilities described above.
 
 Rate limiting:
 
@@ -1074,22 +1186,24 @@ Email delivery:
 
 Canopy calls `EmailSender`, but it does not send SMTP or provider email itself. Applications must connect this to their email provider.
 
+Key rotation:
+
+Removing a previous key too early invalidates outstanding signed links and can
+make provider or two-factor ciphertext unreadable. Keep it configured until
+the token lifetime has elapsed and persistent ciphertext has been re-encrypted,
+or use application-owned codecs backed by a KMS.
+
 ## Roadmap
 
 The intent is to grow Canopy toward Better Auth feature parity while keeping Go-native APIs:
 
 - Magic link.
 - Passkeys/WebAuthn.
-- Two-factor authentication.
-- Organization/team support.
-- Admin user management APIs.
+- Teams within organizations.
 - Account linking confirmation flows.
 - More OAuth providers.
 - MySQL and SQLite stores.
-- Transactional store APIs.
-- Session listing APIs.
 - Device/session management.
-- Hooks and plugin system.
 - First-party router adapters where `net/http` is not ergonomic enough.
 - Optional stateless or cookie-cache session strategies.
 
