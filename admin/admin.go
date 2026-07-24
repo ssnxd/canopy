@@ -16,6 +16,8 @@ import (
 
 const moduleID = "admin"
 
+const defaultImpersonationParentCookieName = "canopy.impersonation_parent"
+
 // AdminAuthorizer decides if a session may use the admin API.
 type AdminAuthorizer interface {
 	IsAdmin(ctx context.Context, data canopy.SessionData) bool
@@ -44,6 +46,9 @@ type Options struct {
 	// AdminRoles lists the user roles that grant admin access. The
 	// default is ["admin"]. It is used only when Authorizer is nil.
 	AdminRoles []string
+	// ImpersonationParentCookieName is the HttpOnly cookie that preserves
+	// proof of the original admin session during impersonation.
+	ImpersonationParentCookieName string
 }
 
 // userAccountCreator is the optional atomic provisioning capability.
@@ -55,7 +60,8 @@ type userAccountCreator interface {
 // unban, list and revoke sessions, and impersonation. It implements
 // canopy.Module and canopy.RouteModule.
 type Module struct {
-	authorizer AdminAuthorizer
+	authorizer                    AdminAuthorizer
+	impersonationParentCookieName string
 
 	core  canopy.Core
 	store canopy.AdminStore
@@ -71,7 +77,14 @@ func New(o Options) *Module {
 		}
 		authorizer = RoleAuthorizer{Roles: roles}
 	}
-	return &Module{authorizer: authorizer}
+	parentCookieName := o.ImpersonationParentCookieName
+	if parentCookieName == "" {
+		parentCookieName = defaultImpersonationParentCookieName
+	}
+	return &Module{
+		authorizer:                    authorizer,
+		impersonationParentCookieName: parentCookieName,
+	}
 }
 
 func (m *Module) ID() string { return moduleID }
@@ -330,6 +343,10 @@ func (m *Module) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if admin.Session.ImpersonatedBy != "" {
+		canopy.WriteError(w, canopy.ErrForbidden)
+		return
+	}
 	var req struct {
 		UserID string `json:"userId"`
 	}
@@ -350,6 +367,7 @@ func (m *Module) handleImpersonate(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, err)
 		return
 	}
+	m.setImpersonationParentCookie(w, admin.Session.Token)
 	m.core.Config().Session.SetCookie(w, token, nil)
 	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "admin.impersonation.started", UserID: admin.User.ID, Success: true})
 	canopy.WriteJSON(w, http.StatusOK, data)
@@ -365,24 +383,57 @@ func (m *Module) handleStopImpersonating(w http.ResponseWriter, r *http.Request)
 		canopy.WriteError(w, canopy.ErrInvalidInput)
 		return
 	}
-	admin, err := m.core.Store().FindUserByID(r.Context(), data.Session.ImpersonatedBy)
-	if err != nil {
+	parentCookie, err := r.Cookie(m.impersonationParentCookieName)
+	if err != nil || parentCookie.Value == "" {
 		canopy.WriteError(w, canopy.ErrUnauthorized)
 		return
 	}
-	// Revoke the impersonation session and restore the admin session.
-	_ = m.core.Store().DeleteSessionByToken(r.Context(), data.Session.Token)
-	restored, token, err := m.core.IssueSession(r.Context(), *admin, canopy.SessionOptions{
-		IPAddress: requestIP(r),
-		UserAgent: r.UserAgent(),
-	})
-	if err != nil {
+	parentRequest := r.Clone(r.Context())
+	parentRequest.Header.Set("Authorization", "Bearer "+parentCookie.Value)
+	parent, err := m.core.Authenticate(parentRequest)
+	if err != nil || parent.User.ID != data.Session.ImpersonatedBy || !m.authorizer.IsAdmin(r.Context(), *parent) {
+		canopy.WriteError(w, canopy.ErrUnauthorized)
+		return
+	}
+	if err := m.core.Store().DeleteSessionByToken(r.Context(), data.Session.Token); err != nil {
 		canopy.WriteError(w, err)
 		return
 	}
-	m.core.Config().Session.SetCookie(w, token, nil)
-	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "admin.impersonation.stopped", UserID: admin.ID, Success: true})
-	canopy.WriteJSON(w, http.StatusOK, restored)
+	rememberMe := false
+	m.core.Config().Session.SetCookie(w, parentCookie.Value, &rememberMe)
+	m.clearImpersonationParentCookie(w)
+	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "admin.impersonation.stopped", UserID: parent.User.ID, Success: true})
+	canopy.WriteJSON(w, http.StatusOK, parent)
+}
+
+func (m *Module) setImpersonationParentCookie(w http.ResponseWriter, token string) {
+	cfg := m.core.Config()
+	http.SetCookie(w, &http.Cookie{
+		Name:     m.impersonationParentCookieName,
+		Value:    token,
+		Path:     cfg.Session.CookiePath,
+		Domain:   cfg.Session.CookieDomain,
+		HttpOnly: true,
+		Secure:   cfg.Session.Secure,
+		SameSite: cfg.Session.SameSite,
+		MaxAge:   int(cfg.Session.Expiry.Seconds()),
+		Expires:  time.Now().Add(cfg.Session.Expiry),
+	})
+}
+
+func (m *Module) clearImpersonationParentCookie(w http.ResponseWriter) {
+	cfg := m.core.Config()
+	http.SetCookie(w, &http.Cookie{
+		Name:     m.impersonationParentCookieName,
+		Value:    "",
+		Path:     cfg.Session.CookiePath,
+		Domain:   cfg.Session.CookieDomain,
+		HttpOnly: true,
+		Secure:   cfg.Session.Secure,
+		SameSite: cfg.Session.SameSite,
+		MaxAge:   -1,
+		Expires:  time.Unix(0, 0),
+	})
 }
 
 func newID(prefix string) (string, error) {

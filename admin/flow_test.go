@@ -36,6 +36,14 @@ func newFixture(t *testing.T) *fixture {
 
 func (f *fixture) do(t *testing.T, method, path string, body any, cookie *http.Cookie) *httptest.ResponseRecorder {
 	t.Helper()
+	if cookie == nil {
+		return f.doWithCookies(t, method, path, body)
+	}
+	return f.doWithCookies(t, method, path, body, cookie)
+}
+
+func (f *fixture) doWithCookies(t *testing.T, method, path string, body any, cookies ...*http.Cookie) *httptest.ResponseRecorder {
+	t.Helper()
 	var reader *bytes.Reader
 	if body != nil {
 		encoded, err := json.Marshal(body)
@@ -48,7 +56,7 @@ func (f *fixture) do(t *testing.T, method, path string, body any, cookie *http.C
 	}
 	req := httptest.NewRequest(method, path, reader)
 	req.Header.Set("Content-Type", "application/json")
-	if cookie != nil {
+	for _, cookie := range cookies {
 		req.AddCookie(cookie)
 	}
 	rec := httptest.NewRecorder()
@@ -192,14 +200,17 @@ func TestAdminImpersonation(t *testing.T) {
 	if imp.Code != http.StatusOK {
 		t.Fatalf("impersonate status = %d, body = %s", imp.Code, imp.Body.String())
 	}
-	var impCookie *http.Cookie
+	var impCookie, parentCookie *http.Cookie
 	for _, c := range imp.Result().Cookies() {
-		if c.Name == "canopy.session_token" {
+		switch c.Name {
+		case "canopy.session_token":
 			impCookie = c
+		case "canopy.impersonation_parent":
+			parentCookie = c
 		}
 	}
-	if impCookie == nil {
-		t.Fatal("no impersonation cookie")
+	if impCookie == nil || parentCookie == nil {
+		t.Fatal("missing impersonation cookies")
 	}
 
 	// The impersonation session is the target, marked with the admin.
@@ -216,7 +227,12 @@ func TestAdminImpersonation(t *testing.T) {
 	}
 
 	// Stop impersonating restores the admin.
-	stop := f.do(t, http.MethodPost, "/admin/stop-impersonating", nil, impCookie)
+	stolen := f.do(t, http.MethodPost, "/admin/stop-impersonating", nil, impCookie)
+	if stolen.Code != http.StatusUnauthorized {
+		t.Fatalf("stop without parent proof status = %d, want 401", stolen.Code)
+	}
+
+	stop := f.doWithCookies(t, http.MethodPost, "/admin/stop-impersonating", nil, impCookie, parentCookie)
 	if stop.Code != http.StatusOK {
 		t.Fatalf("stop status = %d, body = %s", stop.Code, stop.Body.String())
 	}
