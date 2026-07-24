@@ -19,6 +19,10 @@ func TestTOTPGenerateAndValidate(t *testing.T) {
 	if !totp.Validate(secret, code, now) {
 		t.Fatal("valid code was rejected")
 	}
+	counter, ok := totp.ValidateCounter(secret, code, now)
+	if !ok || counter != now.Unix()/30 {
+		t.Fatalf("counter = %d, ok = %v", counter, ok)
+	}
 }
 
 func TestTOTPRejectsWrongCode(t *testing.T) {

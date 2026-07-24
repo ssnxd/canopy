@@ -197,9 +197,9 @@ func (s *Store) DeleteExpiredVerifications(ctx context.Context, now time.Time) e
 
 func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
 	row := s.db.QueryRowContext(ctx, `
-select user_id, secret, enabled, created_at, updated_at from two_factor where user_id=$1`, userID)
+	select user_id, secret, enabled, last_totp_step, created_at, updated_at from two_factor where user_id=$1`, userID)
 	var tf canopy.TwoFactor
-	if err := row.Scan(&tf.UserID, &tf.Secret, &tf.Enabled, &tf.CreatedAt, &tf.UpdatedAt); err != nil {
+	if err := row.Scan(&tf.UserID, &tf.Secret, &tf.Enabled, &tf.LastTOTPStep, &tf.CreatedAt, &tf.UpdatedAt); err != nil {
 		return nil, mapErr(err)
 	}
 	return &tf, nil
@@ -207,10 +207,11 @@ select user_id, secret, enabled, created_at, updated_at from two_factor where us
 
 func (s *Store) UpsertTwoFactor(ctx context.Context, tf *canopy.TwoFactor) error {
 	_, err := s.db.ExecContext(ctx, `
-insert into two_factor (user_id, secret, enabled, created_at, updated_at)
-values ($1,$2,$3,$4,$5)
-on conflict (user_id) do update set secret=excluded.secret, enabled=excluded.enabled, updated_at=excluded.updated_at`,
-		tf.UserID, tf.Secret, tf.Enabled, tf.CreatedAt, tf.UpdatedAt)
+	insert into two_factor (user_id, secret, enabled, last_totp_step, created_at, updated_at)
+	values ($1,$2,$3,$4,$5,$6)
+	on conflict (user_id) do update set
+		secret=excluded.secret, enabled=excluded.enabled, last_totp_step=excluded.last_totp_step, updated_at=excluded.updated_at`,
+		tf.UserID, tf.Secret, tf.Enabled, tf.LastTOTPStep, tf.CreatedAt, tf.UpdatedAt)
 	return mapErr(err)
 }
 
@@ -250,6 +251,20 @@ insert into two_factor_backup_code (user_id, code_hash, created_at) values ($1,$
 
 func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) (bool, error) {
 	res, err := s.db.ExecContext(ctx, `delete from two_factor_backup_code where user_id=$1 and code_hash=$2`, userID, codeHash)
+	if err != nil {
+		return false, mapErr(err)
+	}
+	n, err := res.RowsAffected()
+	if err != nil {
+		return false, err
+	}
+	return n > 0, nil
+}
+
+func (s *Store) ConsumeTOTPStep(ctx context.Context, userID string, counter int64) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `
+	update two_factor set last_totp_step=$2, updated_at=$3
+	where user_id=$1 and last_totp_step < $2`, userID, counter, time.Now().UTC())
 	if err != nil {
 		return false, mapErr(err)
 	}

@@ -24,22 +24,24 @@ const (
 
 // Options configures the two-factor module.
 type Options struct {
-	Issuer          string        // label shown in the authenticator app
-	Authenticator   Authenticator // default: RFC 6238 TOTP
-	Codec           Codec         // default: AES-GCM key derived from the Canopy secret
-	BackupCodeCount int           // default: 10
-	ChallengeTTL    time.Duration // default: 10 minutes
+	Issuer           string        // label shown in the authenticator app
+	Authenticator    Authenticator // default: RFC 6238 TOTP
+	Codec            Codec         // default: AES-GCM key derived from the Canopy secret
+	BackupCodeCount  int           // default: 10
+	ChallengeTTL     time.Duration // default: 10 minutes
+	RecentAuthMaxAge time.Duration // default: 10 minutes
 }
 
 // Module adds TOTP two-factor authentication with backup codes. It
 // implements canopy.Module, canopy.RouteModule, and
 // canopy.SignInInterceptor.
 type Module struct {
-	issuer          string
-	authenticator   Authenticator
-	codec           Codec
-	backupCodeCount int
-	challengeTTL    time.Duration
+	issuer           string
+	authenticator    Authenticator
+	codec            Codec
+	backupCodeCount  int
+	challengeTTL     time.Duration
+	recentAuthMaxAge time.Duration
 
 	core  canopy.Core
 	store canopy.TwoFactorStore
@@ -49,11 +51,12 @@ type Module struct {
 // New returns a two-factor module.
 func New(o Options) *Module {
 	return &Module{
-		issuer:          o.Issuer,
-		authenticator:   o.Authenticator,
-		codec:           o.Codec,
-		backupCodeCount: o.BackupCodeCount,
-		challengeTTL:    o.ChallengeTTL,
+		issuer:           o.Issuer,
+		authenticator:    o.Authenticator,
+		codec:            o.Codec,
+		backupCodeCount:  o.BackupCodeCount,
+		challengeTTL:     o.ChallengeTTL,
+		recentAuthMaxAge: o.RecentAuthMaxAge,
 	}
 }
 
@@ -87,6 +90,9 @@ func (m *Module) Init(core canopy.Core) error {
 	}
 	if m.challengeTTL == 0 {
 		m.challengeTTL = 10 * time.Minute
+	}
+	if m.recentAuthMaxAge == 0 {
+		m.recentAuthMaxAge = 10 * time.Minute
 	}
 	if m.issuer == "" {
 		m.issuer = "Canopy"
@@ -130,6 +136,14 @@ func (m *Module) handleEnable(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrUnauthorized)
 		return
 	}
+	if data.Session.ImpersonatedBy != "" {
+		canopy.WriteError(w, canopy.ErrForbidden)
+		return
+	}
+	if time.Since(data.Session.CreatedAt) > m.recentAuthMaxAge {
+		canopy.WriteError(w, canopy.ErrRecentAuthentication)
+		return
+	}
 	if tf, err := m.store.GetTwoFactor(r.Context(), data.User.ID); err == nil && tf.Enabled {
 		canopy.WriteError(w, canopy.ErrConflict)
 		return
@@ -167,6 +181,14 @@ func (m *Module) handleVerify(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrUnauthorized)
 		return
 	}
+	if data.Session.ImpersonatedBy != "" {
+		canopy.WriteError(w, canopy.ErrForbidden)
+		return
+	}
+	if time.Since(data.Session.CreatedAt) > m.recentAuthMaxAge {
+		canopy.WriteError(w, canopy.ErrRecentAuthentication)
+		return
+	}
 	var req struct {
 		Code string `json:"code"`
 	}
@@ -183,11 +205,13 @@ func (m *Module) handleVerify(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, err)
 		return
 	}
-	if !m.authenticator.Validate(string(secret), req.Code, time.Now()) {
+	counter, valid := m.authenticator.ValidateCounter(string(secret), req.Code, time.Now())
+	if !valid {
 		canopy.WriteError(w, canopy.ErrInvalidTwoFactorCode)
 		return
 	}
 	tf.Enabled = true
+	tf.LastTOTPStep = counter
 	tf.UpdatedAt = time.Now().UTC()
 	if err := m.store.UpsertTwoFactor(r.Context(), tf); err != nil {
 		canopy.WriteError(w, err)
@@ -210,6 +234,10 @@ func (m *Module) handleDisable(w http.ResponseWriter, r *http.Request) {
 	data, ok := canopy.SessionFromContext(r.Context())
 	if !ok {
 		canopy.WriteError(w, canopy.ErrUnauthorized)
+		return
+	}
+	if data.Session.ImpersonatedBy != "" {
+		canopy.WriteError(w, canopy.ErrForbidden)
 		return
 	}
 	var req struct {
@@ -266,8 +294,8 @@ func (m *Module) completeChallenge(w http.ResponseWriter, r *http.Request, useBa
 	if useBackup {
 		consumed, err := m.store.ConsumeBackupCode(r.Context(), userID, hashToken(normalizeBackupCode(req.Code)))
 		valid = err == nil && consumed
-	} else if secret, err := m.codec.Decrypt(tf.Secret); err == nil {
-		valid = m.authenticator.Validate(string(secret), req.Code, time.Now())
+	} else {
+		valid = m.verifyTOTP(r.Context(), userID, tf, req.Code)
 	}
 	if !valid {
 		m.core.Audit(r.Context(), canopy.AuditEvent{Type: "two_factor.challenge.failed", UserID: userID, Success: false, Error: canopy.ErrInvalidTwoFactorCode.Error()})
@@ -294,12 +322,23 @@ func (m *Module) completeChallenge(w http.ResponseWriter, r *http.Request, useBa
 }
 
 func (m *Module) verifyCode(ctx context.Context, userID string, tf *canopy.TwoFactor, code string) bool {
-	if secret, err := m.codec.Decrypt(tf.Secret); err == nil {
-		if m.authenticator.Validate(string(secret), code, time.Now()) {
-			return true
-		}
+	if m.verifyTOTP(ctx, userID, tf, code) {
+		return true
 	}
 	consumed, err := m.store.ConsumeBackupCode(ctx, userID, hashToken(normalizeBackupCode(code)))
+	return err == nil && consumed
+}
+
+func (m *Module) verifyTOTP(ctx context.Context, userID string, tf *canopy.TwoFactor, code string) bool {
+	secret, err := m.codec.Decrypt(tf.Secret)
+	if err != nil {
+		return false
+	}
+	counter, ok := m.authenticator.ValidateCounter(string(secret), code, time.Now())
+	if !ok {
+		return false
+	}
+	consumed, err := m.store.ConsumeTOTPStep(ctx, userID, counter)
 	return err == nil && consumed
 }
 

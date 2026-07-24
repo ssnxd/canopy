@@ -20,6 +20,7 @@ type Authenticator interface {
 	GenerateSecret() (string, error)
 	URI(secret, account, issuer string) string
 	Validate(secret, code string, at time.Time) bool
+	ValidateCounter(secret, code string, at time.Time) (counter int64, ok bool)
 }
 
 // TOTP is an RFC 6238 authenticator. The zero value uses safe defaults.
@@ -63,27 +64,35 @@ func (t *TOTP) URI(secret, account, issuer string) string {
 }
 
 func (t *TOTP) Validate(secret, code string, at time.Time) bool {
+	_, ok := t.ValidateCounter(secret, code, at)
+	return ok
+}
+
+// ValidateCounter validates code and returns the matching RFC 6238 counter.
+// Callers persist the counter to reject reuse of the same one-time code.
+func (t *TOTP) ValidateCounter(secret, code string, at time.Time) (int64, bool) {
 	code = strings.TrimSpace(code)
 	if len(code) != t.digits() {
-		return false
+		return 0, false
 	}
 	key, err := base32NoPad.DecodeString(strings.ToUpper(strings.TrimSpace(secret)))
 	if err != nil {
-		return false
+		return 0, false
 	}
 	period := int64(t.period().Seconds())
-	if period <= 0 {
-		return false
+	if period <= 0 || t.Skew < 0 {
+		return 0, false
 	}
 	counter := at.Unix() / period
 	skew := int64(t.Skew)
 	for offset := -skew; offset <= skew; offset++ {
-		candidate := t.hotp(key, counter+offset)
+		step := counter + offset
+		candidate := t.hotp(key, step)
 		if subtle.ConstantTimeCompare([]byte(code), []byte(candidate)) == 1 {
-			return true
+			return step, true
 		}
 	}
-	return false
+	return 0, false
 }
 
 // GenerateCode returns the TOTP code for secret at time at.

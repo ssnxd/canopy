@@ -8,11 +8,14 @@ import (
 // TwoFactor is the stored two-factor state for a user. Secret is the
 // encrypted TOTP secret. The two-factor module owns the encryption.
 type TwoFactor struct {
-	UserID    string
-	Secret    string
-	Enabled   bool
-	CreatedAt time.Time
-	UpdatedAt time.Time
+	UserID  string
+	Secret  string
+	Enabled bool
+	// LastTOTPStep is the most recent accepted TOTP counter. A new code must
+	// have a greater counter to prevent replay.
+	LastTOTPStep int64
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // TwoFactorStore is an optional Store capability. The two-factor module
@@ -26,4 +29,7 @@ type TwoFactorStore interface {
 	// ConsumeBackupCode removes one backup code hash. It reports if a
 	// code was removed. The removal must be atomic.
 	ConsumeBackupCode(ctx context.Context, userID, codeHash string) (bool, error)
+	// ConsumeTOTPStep records counter when it is newer than the last accepted
+	// counter. It must compare and update atomically.
+	ConsumeTOTPStep(ctx context.Context, userID string, counter int64) (bool, error)
 }

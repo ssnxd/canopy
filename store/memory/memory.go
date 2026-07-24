@@ -317,6 +317,21 @@ func (s *Store) ConsumeBackupCode(ctx context.Context, userID, codeHash string) 
 	return true, nil
 }
 
+func (s *Store) ConsumeTOTPStep(ctx context.Context, userID string, counter int64) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	tf := s.twoFactor[userID]
+	if tf == nil {
+		return false, canopy.ErrNotFound
+	}
+	if counter <= tf.LastTOTPStep {
+		return false, nil
+	}
+	tf.LastTOTPStep = counter
+	tf.UpdatedAt = time.Now().UTC()
+	return true, nil
+}
+
 func (s *Store) CreateOrganization(ctx context.Context, org *canopy.Organization) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

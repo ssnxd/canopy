@@ -18,19 +18,21 @@ type flowFixture struct {
 	auth    *canopy.Auth
 	handler http.Handler
 	totp    *twofactor.TOTP
+	store   *memory.Store
 }
 
 func newFlow(t *testing.T) *flowFixture {
 	t.Helper()
+	store := memory.New()
 	auth, err := canopy.New(canopy.Config{
-		Store:   memory.New(),
+		Store:   store,
 		Secret:  "dev-secret-with-enough-test-entropy",
 		Modules: []canopy.Module{twofactor.New(twofactor.Options{Issuer: "Canopy Test"})},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &flowFixture{auth: auth, handler: auth.Handler(), totp: twofactor.NewTOTP()}
+	return &flowFixture{auth: auth, handler: auth.Handler(), totp: twofactor.NewTOTP(), store: store}
 }
 
 func post(t *testing.T, handler http.Handler, path string, body any, cookies []*http.Cookie) *httptest.ResponseRecorder {
@@ -142,7 +144,7 @@ func TestTwoFactorTOTPSignInFlow(t *testing.T) {
 	_, secret, _ := f.enroll(t, "ada@example.com")
 
 	token := f.startSignIn(t, "ada@example.com")
-	code, err := f.totp.GenerateCode(secret, time.Now())
+	code, err := f.totp.GenerateCode(secret, time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -173,13 +175,53 @@ func TestTwoFactorChallengeTokenIsOneTime(t *testing.T) {
 		t.Fatalf("wrong code status = %d, want 401", wrong.Code)
 	}
 	// A correct code with the now-consumed token must fail.
-	code, err := f.totp.GenerateCode(secret, time.Now())
+	code, err := f.totp.GenerateCode(secret, time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}
 	replay := post(t, f.handler, "/two-factor/challenge", map[string]any{"token": token, "code": code}, nil)
 	if replay.Code == http.StatusOK {
 		t.Fatal("a consumed challenge token was accepted")
+	}
+}
+
+func TestTwoFactorRejectsReplayedTOTPCodeAcrossChallenges(t *testing.T) {
+	f := newFlow(t)
+	_, secret, _ := f.enroll(t, "ada@example.com")
+	firstToken := f.startSignIn(t, "ada@example.com")
+	secondToken := f.startSignIn(t, "ada@example.com")
+	code, err := f.totp.GenerateCode(secret, time.Now().Add(30*time.Second))
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := post(t, f.handler, "/two-factor/challenge", map[string]any{"token": firstToken, "code": code}, nil)
+	if first.Code != http.StatusOK {
+		t.Fatalf("first challenge status = %d, body = %s", first.Code, first.Body.String())
+	}
+	replay := post(t, f.handler, "/two-factor/challenge", map[string]any{"token": secondToken, "code": code}, nil)
+	if replay.Code != http.StatusUnauthorized {
+		t.Fatalf("replayed TOTP status = %d, want 401", replay.Code)
+	}
+}
+
+func TestTwoFactorEnrollmentRequiresRecentAuthentication(t *testing.T) {
+	f := newFlow(t)
+	signup := post(t, f.handler, "/sign-up/email", map[string]string{
+		"name": "Ada", "email": "ada@example.com", "password": "correct-password",
+	}, nil)
+	sessionCookie := cookie(t, signup, "canopy.session_token")
+	data, err := f.store.FindSessionByToken(context.Background(), sessionCookie.Value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data.Session.CreatedAt = time.Now().Add(-11 * time.Minute)
+	if err := f.store.UpdateSession(context.Background(), &data.Session); err != nil {
+		t.Fatal(err)
+	}
+
+	enable := post(t, f.handler, "/two-factor/enable", map[string]string{}, []*http.Cookie{sessionCookie})
+	if enable.Code != http.StatusForbidden {
+		t.Fatalf("stale-session enable status = %d, want 403", enable.Code)
 	}
 }
 
@@ -206,7 +248,7 @@ func TestTwoFactorDisableRestoresDirectSignIn(t *testing.T) {
 	f := newFlow(t)
 	sessionCookie, secret, _ := f.enroll(t, "ada@example.com")
 
-	code, _ := f.totp.GenerateCode(secret, time.Now())
+	code, _ := f.totp.GenerateCode(secret, time.Now().Add(30*time.Second))
 	disable := post(t, f.handler, "/two-factor/disable", map[string]string{"code": code}, []*http.Cookie{sessionCookie})
 	if disable.Code != http.StatusOK {
 		t.Fatalf("disable status = %d, body = %s", disable.Code, disable.Body.String())

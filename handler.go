@@ -405,6 +405,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "FORBIDDEN", "Forbidden"
 	case errors.Is(err, ErrInvalidTwoFactorCode):
 		status, code, message = http.StatusUnauthorized, "INVALID_TWO_FACTOR_CODE", "Invalid two-factor code"
+	case errors.Is(err, ErrRecentAuthentication):
+		status, code, message = http.StatusForbidden, "RECENT_AUTHENTICATION_REQUIRED", "Recent authentication is required"
 	case errors.Is(err, ErrOrganizationNotFound):
 		status, code, message = http.StatusNotFound, "ORGANIZATION_NOT_FOUND", "Organization was not found"
 	case errors.Is(err, ErrNotOrganizationMember):

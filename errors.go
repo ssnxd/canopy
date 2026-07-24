@@ -22,6 +22,7 @@ var (
 	ErrForbidden                  = errors.New("canopy: forbidden")
 	ErrUserBanned                 = errors.New("canopy: user banned")
 	ErrInvalidTwoFactorCode       = errors.New("canopy: invalid two-factor code")
+	ErrRecentAuthentication       = errors.New("canopy: recent authentication required")
 	ErrOrganizationNotFound       = errors.New("canopy: organization not found")
 	ErrNotOrganizationMember      = errors.New("canopy: not organization member")
 	ErrInvitationInvalid          = errors.New("canopy: invitation invalid")

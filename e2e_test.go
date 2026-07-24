@@ -265,7 +265,7 @@ func TestE2ETwoFactorWithPostgres(t *testing.T) {
 	}
 
 	// Complete with a TOTP code.
-	code2, err := totp.GenerateCode(enableBody.Secret, time.Now())
+	code2, err := totp.GenerateCode(enableBody.Secret, time.Now().Add(30*time.Second))
 	if err != nil {
 		t.Fatal(err)
 	}

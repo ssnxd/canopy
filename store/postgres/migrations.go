@@ -80,9 +80,12 @@ create table if not exists two_factor (
 	user_id text primary key references "user"(id) on delete cascade,
 	secret text not null,
 	enabled boolean not null default false,
+	last_totp_step bigint not null default -1,
 	created_at timestamptz not null,
 	updated_at timestamptz not null
 );
+
+alter table two_factor add column if not exists last_totp_step bigint not null default -1;
 
 create table if not exists two_factor_backup_code (
 	user_id text not null references "user"(id) on delete cascade,
