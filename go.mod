@@ -2,6 +2,8 @@ module github.com/ssnxd/canopy
 
 go 1.25.12
 
+toolchain go1.26.5
+
 require (
 	github.com/coreos/go-oidc/v3 v3.18.0
 	github.com/lib/pq v1.12.3
