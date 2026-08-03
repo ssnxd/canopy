@@ -2,9 +2,15 @@
 
 ## Supported versions
 
-Canopy is pre-1.0 software. Security fixes are applied to the latest commit on
-the default branch. Upgrade to the newest release before reporting an issue
-that may already be fixed.
+Security fixes are applied to the latest v1.x release. Older releases do not
+receive fixes. Upgrade to the newest release before reporting an issue that
+may already be fixed.
+
+| Version | Supported |
+| --- | --- |
+| Latest v1.x release | Yes |
+| Older v1.x releases | No |
+| v0.x | No |
 
 ## Reporting a vulnerability
 

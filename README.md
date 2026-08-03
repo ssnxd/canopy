@@ -48,6 +48,8 @@ Not implemented yet:
 
 ## Install
 
+Canopy requires Go 1.25.12 or later.
+
 ```sh
 go get github.com/ssnxd/canopy
 go get github.com/ssnxd/canopy/store/postgres

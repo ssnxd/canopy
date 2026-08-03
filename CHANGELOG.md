@@ -2,13 +2,33 @@
 
 All notable changes to Canopy will be documented in this file.
 
-Canopy follows semantic versioning after the first stable release. Until
-v1.0.0, public APIs may change when needed to improve the v1 design.
+Canopy follows semantic versioning from v1.0.0. Releases after v1.0.0 do not
+make breaking changes to the public API without a major version increase.
 
 ## [Unreleased]
 
+### Planned
+
+- Live Google and Apple OAuth integration tests.
+- Explicit account-linking confirmation flow.
+- Magic links and passkeys.
+- Additional OAuth providers.
+- Email provider examples.
+- MySQL and SQLite stores.
+
+## [1.0.0] - 2026-08-03
+
+This is the first stable release. It contains the full remediation of the
+2026-07-24 security audit. See `SECURITY_AUDIT.md`.
+
 ### Security
 
+- Pin the patched `go1.26.5` toolchain in `go.mod` so this project's own
+  builds, tests, releases, and vulnerability scans use a standard library with
+  all current security fixes. Applications compile Canopy with their own
+  toolchain and must keep it patched.
+- Update `github.com/coreos/go-oidc/v3` to v3.20.0, `golang.org/x/crypto` to
+  v0.54.0, and the indirect dependencies to their current versions.
 - Store session tokens as SHA-256 digests and OAuth provider credentials as
   AES-256-GCM ciphertext.
 - Require parent-session proof before restoring an administrator after
@@ -50,8 +70,9 @@ v1.0.0, public APIs may change when needed to improve the v1 design.
 
 ### Changed
 
-- The minimum Go toolchain is now 1.25.12 so builds include the standard-library
-  security fixes enforced by `govulncheck`.
+- The module now requires Go 1.25.12 or later, which includes the
+  standard-library security fixes enforced by `govulncheck`. The project itself
+  builds and releases with the pinned `go1.26.5` toolchain.
 - The zero-value environment now defaults to `Production`; local development
   must select `canopy.Development` explicitly.
 - `BasePath` now controls request routing and default cookie scope. Mount the
@@ -97,15 +118,6 @@ v1.0.0, public APIs may change when needed to improve the v1 design.
 - Update modules for `RuntimeConfig`, purpose-separated keys, password hashing,
   and trusted client IP access. The removed `AccountLinkingPolicy` and
   `sessions.Codec` APIs had no effective behavior.
-
-### Planned
-
-- Live Google and Apple OAuth integration tests.
-- Explicit account-linking confirmation flow.
-- Magic links and passkeys.
-- Additional OAuth providers.
-- Email provider examples.
-- MySQL and SQLite stores.
 
 ## [0.1.0] - 2026-05-15
 
