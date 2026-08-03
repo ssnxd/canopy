@@ -6,7 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/ssnxd/canopy v1.0.0
+	github.com/ssnxd/canopy v1.0.1
 )
 
 require (

@@ -6,8 +6,8 @@ github.com/go-jose/go-jose/v4 v4.1.4 h1:moDMcTHmvE6Groj34emNPLs/qtYXRVcd6S7NHbHz
 github.com/go-jose/go-jose/v4 v4.1.4/go.mod h1:x4oUasVrzR7071A4TnHLGSPpNOm2a21K9Kf04k1rs08=
 github.com/lib/pq v1.12.3 h1:tTWxr2YLKwIvK90ZXEw8GP7UFHtcbTtty8zsI+YjrfQ=
 github.com/lib/pq v1.12.3/go.mod h1:/p+8NSbOcwzAEI7wiMXFlgydTwcgTr3OSKMsD2BitpA=
-github.com/ssnxd/canopy v1.0.0 h1:JgisaK112Ogxsbz8OBiaJ61HW+7GzCUVVwAUw6XpERo=
-github.com/ssnxd/canopy v1.0.0/go.mod h1:YZ7YxWIZxopR+cB5kb7+2vLxxD1s2D/vDvQHtsOkvpc=
+github.com/ssnxd/canopy v1.0.1 h1:UW6yZmTiCGEo6XB3si8d1TsRFPGUULfx/8lczvspQCQ=
+github.com/ssnxd/canopy v1.0.1/go.mod h1:YZ7YxWIZxopR+cB5kb7+2vLxxD1s2D/vDvQHtsOkvpc=
 golang.org/x/crypto v0.54.0 h1:YLIA59K4fiNzHzjnZt2tUJQjQtUWfWbeHBqKtk3eScw=
 golang.org/x/crypto v0.54.0/go.mod h1:KWL8ny2AZdGR2cWmzeHrp2azQPGogOv+HeQaVEXC2dk=
 golang.org/x/oauth2 v0.36.0 h1:peZ/1z27fi9hUOFCAZaHyrpWG5lwe0RJEEEeH0ThlIs=
