@@ -36,12 +36,12 @@ Implemented today:
 - Audit logging interface.
 - Postgres store and in-memory store.
 - Typed public errors for common auth failures.
+- First-party router adapters for chi, Echo, and Gin.
 
 Not implemented yet:
 
 - Magic link and passkeys. These stay out of scope for v1.
 - Teams within organizations. This lands in a later module.
-- First-party adapters for Gin, Echo, Chi, Gorilla, etc. `net/http` works with most routers directly.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
 - Explicit account-linking confirmation flow. v1 rejects unsafe implicit linking.
@@ -130,6 +130,35 @@ func main() {
 ```
 
 `database/sql` drivers are registered by side-effect imports in the application binary. If you use `sql.Open("postgres", ...)`, import `github.com/lib/pq` as shown above. If you prefer pgx, import `github.com/jackc/pgx/v5/stdlib` and open the database with `sql.Open("pgx", ...)`.
+
+## Router Adapters
+
+Canopy serves plain `net/http`, so most routers mount the handler directly. First-party adapters remove the mounting and middleware boilerplate for chi, Echo, and Gin. Each adapter is a separate Go module, so the core module stays free of framework dependencies.
+
+```sh
+go get github.com/ssnxd/canopy/adapters/chi
+go get github.com/ssnxd/canopy/adapters/echo
+go get github.com/ssnxd/canopy/adapters/gin
+```
+
+Each adapter has the same three-part surface:
+
+- `Mount(router, auth)` registers the Canopy handler at `Config.BasePath`. Do not use `http.StripPrefix`.
+- `RequireSession(auth)` returns framework middleware that adds session data to the request context or ends the request with a 401 JSON error.
+- `OptionalSession(auth)` returns framework middleware that adds session data when a valid session is present and continues anonymously otherwise.
+
+The Gin and Echo adapters also provide `Session(c)`, which reads the session from the framework context. With chi, read the session with `canopy.SessionFromContext(r.Context())`.
+
+```go
+router := gin.New()
+canopygin.Mount(router, auth)
+
+protected := router.Group("/", canopygin.RequireSession(auth))
+protected.GET("/me", func(c *gin.Context) {
+	data, _ := canopygin.Session(c)
+	c.JSON(http.StatusOK, data.User)
+})
+```
 
 ## Database
 

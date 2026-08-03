@@ -6,7 +6,9 @@ GO_VET := GOCACHE="$(GOCACHE)" go vet
 CANOPY_E2E_DATABASE_URL ?= postgres://postgres:postgres@localhost:5432/canopy_test?sslmode=disable
 export CANOPY_E2E_DATABASE_URL
 
-.PHONY: help test test-unit unit test-e2e e2e test-all test-race fmt-check vet vuln ci release-check release go-release check-e2e-db check-goreleaser check-github-token check-clean check-tag
+ADAPTER_DIRS := adapters/chi adapters/echo adapters/gin
+
+.PHONY: help test test-unit unit test-e2e e2e test-all test-race test-adapters vet-adapters vuln-adapters fmt-check vet vuln ci release-check release go-release check-e2e-db check-goreleaser check-github-token check-clean check-tag
 
 help:
 	@printf '%s\n' 'Targets:'
@@ -15,6 +17,7 @@ help:
 	@printf '  %-16s %s\n' 'test-e2e' 'Run Postgres-backed e2e tests'
 	@printf '  %-16s %s\n' 'test-all' 'Run unit and e2e tests'
 	@printf '  %-16s %s\n' 'test-race' 'Run unit tests with the race detector'
+	@printf '  %-16s %s\n' 'test-adapters' 'Run the router adapter tests with the race detector'
 	@printf '  %-16s %s\n' 'fmt-check' 'Check Go formatting'
 	@printf '  %-16s %s\n' 'vet' 'Run go vet'
 	@printf '  %-16s %s\n' 'vuln' 'Run govulncheck'
@@ -39,6 +42,21 @@ test-all: test-unit test-e2e
 test-race:
 	$(GO_TEST) -race ./...
 
+test-adapters:
+	@for dir in $(ADAPTER_DIRS); do \
+		(cd $$dir && $(GO_TEST) -race ./...) || exit 1; \
+	done
+
+vet-adapters:
+	@for dir in $(ADAPTER_DIRS); do \
+		(cd $$dir && $(GO_VET) ./...) || exit 1; \
+	done
+
+vuln-adapters:
+	@for dir in $(ADAPTER_DIRS); do \
+		(cd $$dir && GOCACHE="$(GOCACHE)" go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...) || exit 1; \
+	done
+
 fmt-check:
 	@test -z "$$(gofmt -l $$(git ls-files '*.go'))" || { \
 		printf '%s\n' 'The following Go files need gofmt:' >&2; \
@@ -52,7 +70,7 @@ vet:
 vuln:
 	GOCACHE="$(GOCACHE)" go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 ./...
 
-ci: fmt-check test-race vet vuln
+ci: fmt-check test-race vet vuln test-adapters vet-adapters vuln-adapters
 
 release-check: test-all ci check-goreleaser
 	goreleaser check

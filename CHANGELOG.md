@@ -52,6 +52,12 @@ This is the first stable release. It contains the full remediation of the
 
 ### Added
 
+- First-party router adapter modules `adapters/chi`, `adapters/echo`, and
+  `adapters/gin`. Each provides `Mount`, `RequireSession`, and
+  `OptionalSession`; the Echo and Gin adapters also provide `Session`. The
+  adapters are separate Go modules, so the core module stays free of
+  framework dependencies. They receive their own version tags after the core
+  `v1.0.0` tag.
 - `Auth.OptionalSession` and `Auth.RequireSession`, with matching service
   methods.
 - `ValidationError` and field-level HTTP error details.
