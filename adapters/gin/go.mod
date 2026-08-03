@@ -6,7 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/gin-gonic/gin v1.11.0
-	github.com/ssnxd/canopy v0.1.2
+	github.com/ssnxd/canopy v1.0.0
 )
 
 require (
@@ -41,5 +41,3 @@ require (
 	golang.org/x/text v0.40.0 // indirect
 	google.golang.org/protobuf v1.36.9 // indirect
 )
-
-replace github.com/ssnxd/canopy => ../..

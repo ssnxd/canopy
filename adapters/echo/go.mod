@@ -6,7 +6,7 @@ toolchain go1.26.5
 
 require (
 	github.com/labstack/echo/v4 v4.13.4
-	github.com/ssnxd/canopy v0.1.2
+	github.com/ssnxd/canopy v1.0.0
 )
 
 require (
@@ -23,5 +23,3 @@ require (
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/text v0.40.0 // indirect
 )
-
-replace github.com/ssnxd/canopy => ../..
