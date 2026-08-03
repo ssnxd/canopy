@@ -183,6 +183,17 @@ func TestResolveCallbackURL(t *testing.T) {
 		{"/reset-password", "/reset-password"},
 		{"javascript:alert(1)", ""},
 		{"https://app.example.com.evil.example/x", ""},
+		{`/\evil.example/x`, ""},
+		{`/\/evil.example/x`, ""},
+		{`\\evil.example/x`, ""},
+		{`/%5Cevil.example/x`, ""},
+		{`/path\evil.example`, ""},
+		{"/\t/evil.example", ""},
+		{"/\n//evil.example", ""},
+		{"/\r/evil.example", ""},
+		{"reset-password", ""},
+		{"/reset?next=%2Fhome", "/reset?next=%2Fhome"},
+		{"/reset#anchor", "/reset#anchor"},
 	}
 	for _, c := range cases {
 		if got := cfg.resolveCallbackURL(c.in); got != c.want {

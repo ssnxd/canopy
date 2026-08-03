@@ -316,6 +316,29 @@ func (c Config) CheckOrigin(r *http.Request) bool {
 }
 
 // isTrustedOrigin reports if origin is in the trusted origin list.
+// safeRelativeCallback reports whether callbackURL is a same-origin relative
+// reference. A browser folds a backslash into a slash and strips control
+// characters before it resolves a URL. Without these checks, "/\host" and
+// "/<tab>/host" become protocol-relative URLs that point at another host.
+// decodedPath is the percent-decoded path, which blocks the "/%5Chost" form.
+func safeRelativeCallback(callbackURL, decodedPath string) bool {
+	if callbackURL[0] != '/' {
+		return false
+	}
+	if len(callbackURL) > 1 && (callbackURL[1] == '/' || callbackURL[1] == '\\') {
+		return false
+	}
+	if strings.Contains(callbackURL, `\`) || strings.Contains(decodedPath, `\`) {
+		return false
+	}
+	for i := 0; i < len(callbackURL); i++ {
+		if callbackURL[i] < 0x20 || callbackURL[i] == 0x7f {
+			return false
+		}
+	}
+	return true
+}
+
 func (c Config) isTrustedOrigin(origin string) bool {
 	return slices.Contains(c.TrustedOrigins, origin)
 }
@@ -335,6 +358,9 @@ func (c Config) resolveCallbackURL(callbackURL string) string {
 		return ""
 	}
 	if u.Scheme == "" && u.Host == "" {
+		if !safeRelativeCallback(callbackURL, u.Path) {
+			return ""
+		}
 		return callbackURL
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
