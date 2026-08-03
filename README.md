@@ -870,6 +870,20 @@ Endpoints (mounted under the auth handler, both require a session):
 - `POST /link-social` — start a link. Body: `provider`, optional `callbackURL`. Returns the provider authorization URL.
 - `GET|POST /link-social/callback/{provider}` — complete the link. Returns `{"success": true, "providerId": ..., "accountId": ...}` or redirects to the callback URL.
 
+### Register the link callback URI
+
+The module completes the flow on its own callback route, so it sends that route as the OAuth `redirect_uri`. Register this URI with each OAuth client, in addition to the sign-in callback URI:
+
+```
+{origin}{BasePath}/link-social/callback/{provider}
+```
+
+For example, with `BasePath` set to `/api/auth`, register `https://app.example.com/api/auth/link-social/callback/google`. Google and Apple reject a `redirect_uri` that you did not register.
+
+The module derives this URI from the provider's configured redirect URL. That URL must therefore end with `{BasePath}/callback/{provider}`. When it does not, `POST /link-social` returns `502 PROVIDER_FAILURE` and the audit event carries the reason.
+
+A custom `oauth.Provider` must implement `oauth.RedirectExchanger` to support this module. A provider without it authorizes and exchanges with its configured redirect URL, so the provider returns the user to the core callback route and the link fails closed. No alternative configuration works, because the module requires the configured redirect URL to address the core callback route.
+
 The flow fails closed:
 
 - The session must be recent. The default `RecentAuthMaxAge` is 10 minutes; after that, the user must sign in again before linking.
@@ -1083,6 +1097,16 @@ Custom stores should return Canopy typed errors, especially `ErrNotFound`,
 interfaces such as `canopy.TwoFactorStore`, `canopy.OrganizationStore`, and
 `canopy.AdminStore`. Methods documented as atomic must perform their complete
 compare-and-write operation in one transaction.
+
+Canopy also discovers optional capability interfaces. Implement these on a
+production store. Canopy falls back to a less safe path when a store does not
+implement them:
+
+- `canopy.ProtectedMemberRemovalStore` re-reads the member role inside the
+  removal transaction. Without it, a concurrent promotion can remove the last
+  owner of an organization, and no route can restore one.
+- `canopy.AccountLinkStore` consumes the link confirmation token and creates
+  the provider account in one operation.
 
 The Postgres store and the in-memory store (`store/memory`) implement the core
 store and the built-in capabilities. They also provide atomic user/account

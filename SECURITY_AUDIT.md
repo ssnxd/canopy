@@ -2,8 +2,9 @@
 
 This file holds two reports. The first report is the pre-release review of
 2026-07-24. The second report is the post-release audit of 2026-08-03. Read
-both. The first report is a frozen record. Later sections correct it where
-the code proved a claim incomplete.
+both. The first report keeps its original findings. It accepts only editorial
+edits and correction notes. Later sections correct it where the code proved a
+claim incomplete.
 
 ---
 
@@ -30,8 +31,9 @@ one carries a correction note.
 The review found unsafe credential-at-rest handling, an impersonation
 restoration weakness, incomplete identity-verification semantics, replay and
 transaction gaps, permissive production defaults, and several integration
-traps in the public API and documentation. All identified findings were
-addressed in one focused commit per issue.
+traps in the public API and documentation. Each finding received one focused
+commit. The 2026-08-03 audit later proved two of those commits incomplete.
+The table marks both rows.
 
 The resulting design fails closed by default, protects stored bearer material,
 adds atomic state transitions to the built-in stores, normalizes public errors,
@@ -108,6 +110,15 @@ providers; live provider interoperability remains a release-validation task.
 
 This section is superseded. Report 2 holds the current residual-risk list.
 
+One correction belongs on the record. Item 3 of this list asked for an
+explicit account-linking confirmation flow. On 2026-08-03 the maintainer
+marked that item closed, because the `accountlink` module shipped in v1.0.0
+and its tests passed. That closure was premature. The tests used a provider
+fake that accepts any redirect URL, so they proved a flow that no deployment
+could run. Finding LINK-01 in report 2 records the defect and the fix. Do not
+treat a passing test suite as proof that a security control works against a
+real dependency.
+
 ---
 
 # Report 2 — Post-release audit
@@ -131,10 +142,16 @@ live Google or Apple integration test.
 
 ## Executive summary
 
-No finding exceeded medium severity. No finding lets an attacker cross an
-authentication boundary. No finding grants a privilege that the actor did not
-already hold. The core cryptography, the storage layer, and the origin checks
-held up under review.
+No finding exceeded medium severity. No finding grants a privilege that the
+actor did not already hold. The core cryptography, the storage layer, and the
+origin checks held up under review.
+
+One finding touches an authentication boundary. REDIR-01 also applies to the
+callback URL of an email verification link and a password reset link. Canopy
+appends the one-time token to that URL. An application that turns the
+rejected value into an absolute link could therefore send a one-time action
+token to a foreign origin. Treat REDIR-01 as the most urgent item in this
+report.
 
 The audit found one attacker-reachable open redirect. It found that the
 account-linking feature cannot complete with either built-in provider. It

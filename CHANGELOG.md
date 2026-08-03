@@ -24,6 +24,30 @@ the teams feature, the `accountlink` module, and the router adapters. This
 release fixes every defect that the audit confirmed as release-blocking. See
 report 2 in `SECURITY_AUDIT.md`. No public API is removed or changed.
 
+### Upgrade notes
+
+- **Register a new redirect URI before you upgrade, if you use the
+  `accountlink` module.** The module now sends its own callback route as the
+  OAuth `redirect_uri`. Add
+  `{origin}{BasePath}/link-social/callback/{provider}` to each OAuth client,
+  for example `https://app.example.com/api/auth/link-social/callback/google`.
+  Google and Apple accept only redirect URIs that you registered. Without
+  this step, a link attempt fails at the provider with
+  `redirect_uri_mismatch`. Keep the existing sign-in callback URI.
+- The `accountlink` module now requires the provider's configured redirect
+  URL to end with `{BasePath}/callback/{provider}`, because it derives its own
+  callback URL from that value. A provider whose redirect URL uses another
+  path makes `POST /link-social` return `502 PROVIDER_FAILURE`. The audit
+  event carries the reason.
+- A relative `callbackURL` must now start with exactly one slash. Values such
+  as `reset-password`, `?next=1`, and `#anchor` were accepted before and are
+  rejected now. A rejected value is dropped, not reported as an error, so an
+  email arrives without a link. Check any relative callback URL that your
+  application sends.
+- `AfterSignOut` and the `session.revoked` audit event now also fire when the
+  session could not be resolved, for example an account that awaits email
+  verification. A hook implementation must tolerate that case.
+
 ### Security
 
 - Reject a relative callback URL that a browser can fold into another origin.

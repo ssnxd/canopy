@@ -315,7 +315,6 @@ func (c Config) CheckOrigin(r *http.Request) bool {
 	return c.isTrustedOrigin(origin)
 }
 
-// isTrustedOrigin reports if origin is in the trusted origin list.
 // safeRelativeCallback reports whether callbackURL is a same-origin relative
 // reference. A browser folds a backslash into a slash and strips control
 // characters before it resolves a URL. Without these checks, "/\host" and
@@ -339,6 +338,7 @@ func safeRelativeCallback(callbackURL, decodedPath string) bool {
 	return true
 }
 
+// isTrustedOrigin reports if origin is in the trusted origin list.
 func (c Config) isTrustedOrigin(origin string) bool {
 	return slices.Contains(c.TrustedOrigins, origin)
 }

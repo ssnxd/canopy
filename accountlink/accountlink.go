@@ -158,9 +158,14 @@ func (m *Module) redirectURL(configured string, providerID string) (string, erro
 // A provider that does not implement that interface exchanges with its
 // configured redirect URL. The oauth package requires a provider that honors
 // StartOptions.RedirectURL to implement oauth.RedirectExchanger, so such a
-// provider also authorized with its configured redirect URL and the two
-// values still match. That provider must serve this module's callback route
-// on its configured redirect URL, or account linking cannot complete.
+// provider also authorized with its configured redirect URL. The two values
+// still match, and the flow fails closed: the provider returns the user to
+// the core callback route, which rejects a link state.
+//
+// A custom provider must therefore implement oauth.RedirectExchanger to
+// support this module. No alternative configuration works, because
+// redirectURL requires the configured redirect URL to address the core
+// callback route.
 func (m *Module) exchange(
 	ctx context.Context,
 	provider oauth.Provider,
