@@ -93,8 +93,13 @@ providers; live provider interoperability remains a release-validation task.
 1. Add deployment-specific distributed rate limiting and abuse detection.
 2. Run live Google and Apple authorization tests before a production release.
 3. Design an explicit, recent-authentication account-linking confirmation flow;
-   implicit linking remains rejected.
+   implicit linking remains rejected. Closed on 2026-08-03 by the `accountlink`
+   module.
 4. Prefer the built-in stores until a custom store has concurrency and rollback
    tests for every method documented as atomic.
-5. Commission an independent penetration test before treating a stable release
+5. Narrow the module `Core.Providers` facade so modules can build provider
+   authorization URLs and exchange codes without reading OAuth client
+   secrets. Modules are trusted compile-time code, so this is an advisory
+   hardening item, not a vulnerability.
+6. Commission an independent penetration test before treating a stable release
    as a high-assurance authentication boundary.

@@ -877,6 +877,7 @@ The flow fails closed:
 - The provider email must be verified and must equal the session user's email.
 - The link state is signed, single-use, bound to the browser with an HttpOnly cookie, and expires after `LinkStateTTL` (default 10 minutes).
 - A provider account that belongs to another user returns a conflict.
+- A start request for a provider that the user already linked returns a conflict.
 
 The store consumes the link state and creates the provider account in one atomic operation. No schema migration is needed; the flow reuses the verification and account tables.
 
@@ -1249,7 +1250,7 @@ returned by the HTTP API as stable field-level details.
 
 Account linking:
 
-Canopy does not silently link accounts by email. If a user signs up with email/password and later signs in with Google using the same email, Canopy returns `ErrAccountLinking`. This avoids the common security footgun of treating “same email” as proof of same identity across providers. Build an explicit confirmation flow for linking.
+Canopy does not silently link accounts by email. If a user signs up with email/password and later signs in with Google using the same email, Canopy returns `ErrAccountLinking`. This avoids the common security footgun of treating “same email” as proof of same identity across providers. Add the accountlink module for the explicit confirmation flow.
 
 Custom stores:
 
@@ -1289,12 +1290,9 @@ The intent is to grow Canopy toward Better Auth feature parity while keeping Go-
 
 - Magic link.
 - Passkeys/WebAuthn.
-- Teams within organizations.
-- Account linking confirmation flows.
 - More OAuth providers.
 - MySQL and SQLite stores.
 - Device/session management.
-- First-party router adapters where `net/http` is not ergonomic enough.
 - Optional stateless or cookie-cache session strategies.
 
 ## Design Principles
