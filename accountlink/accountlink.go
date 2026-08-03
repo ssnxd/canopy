@@ -8,7 +8,10 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
+	"net/url"
+	"path"
 	"strings"
 	"time"
 
@@ -23,6 +26,13 @@ const (
 	// maxRequestBodyBytes limits the size of a request body that the module
 	// parses. It matches the limit of the core handler.
 	maxRequestBodyBytes = 1 << 20 // 1 MiB
+	// coreCallbackSegments is the route of the core OAuth callback, without
+	// the base path and the provider ID.
+	coreCallbackSegments = "callback"
+	// linkCallbackSegments is the route of this module's OAuth callback,
+	// without the base path and the provider ID. It must stay equal to the
+	// pattern in Routes.
+	linkCallbackSegments = "link-social/callback"
 )
 
 // Options configures the account-link module.
@@ -95,6 +105,75 @@ type linkStatePayload struct {
 	CallbackURL  string    `json:"callbackURL,omitempty"`
 	BindingHash  string    `json:"bindingHash"`
 	IssuedAt     time.Time `json:"issuedAt"`
+	// RedirectURL is the redirect_uri that the authorization request used.
+	// The state is signed, so the token exchange can send the same value.
+	// OAuth requires the two values to be equal. An empty value means that
+	// the authorization request used the provider's configured redirect URL.
+	RedirectURL string `json:"redirectURL,omitempty"`
+}
+
+// redirectURL returns the absolute URL of this module's OAuth callback for
+// providerID. The provider must return the user to this module's route. The
+// core OAuth callback verifies the state with a different key and a different
+// identifier, so it rejects a link state.
+//
+// The URL comes from server-side configuration only. The origin, and any
+// external path prefix that a proxy adds, come from the redirect URL that the
+// application configured on the provider. The rest comes from
+// RuntimeConfig.BasePath and from this module's own route. The module never
+// reads the request Host, the Origin header, or any other request input. An
+// attacker who controls the redirect_uri can steal an authorization code, so
+// request input must never reach this value.
+func (m *Module) redirectURL(configured string, providerID string) (string, error) {
+	if providerID == "" || providerID == "." || providerID == ".." || strings.ContainsAny(providerID, `/\?#%`) {
+		return "", fmt.Errorf("%w: accountlink: unsupported provider id %q", canopy.ErrProviderFailure, providerID)
+	}
+	parsed, err := url.Parse(configured)
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		return "", fmt.Errorf(
+			"%w: accountlink: provider %q needs an absolute HTTP(S) redirect URL",
+			canopy.ErrProviderFailure, providerID,
+		)
+	}
+	basePath := m.core.Config().BasePath
+	core := path.Join("/", basePath, coreCallbackSegments, providerID)
+	link := path.Join("/", basePath, linkCallbackSegments, providerID)
+	if !strings.HasSuffix(parsed.Path, core) {
+		return "", fmt.Errorf(
+			"%w: accountlink: provider %q redirect URL must end with %q",
+			canopy.ErrProviderFailure, providerID, core,
+		)
+	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, core) + link
+	parsed.RawPath = ""
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	parsed.RawFragment = ""
+	return parsed.String(), nil
+}
+
+// exchange trades the authorization code for a token. It sends redirectURL as
+// the redirect_uri when the provider implements oauth.RedirectExchanger.
+//
+// A provider that does not implement that interface exchanges with its
+// configured redirect URL. The oauth package requires a provider that honors
+// StartOptions.RedirectURL to implement oauth.RedirectExchanger, so such a
+// provider also authorized with its configured redirect URL and the two
+// values still match. That provider must serve this module's callback route
+// on its configured redirect URL, or account linking cannot complete.
+func (m *Module) exchange(
+	ctx context.Context,
+	provider oauth.Provider,
+	code string,
+	verifier string,
+	redirectURL string,
+) (*xoauth2.Token, error) {
+	if redirectURL != "" {
+		if exchanger, ok := provider.(oauth.RedirectExchanger); ok {
+			return exchanger.ExchangeWithRedirect(ctx, code, verifier, redirectURL)
+		}
+	}
+	return provider.Exchange(ctx, code, verifier)
 }
 
 func (m *Module) handleInitiate(w http.ResponseWriter, r *http.Request) {
@@ -135,6 +214,14 @@ func (m *Module) handleInitiate(w http.ResponseWriter, r *http.Request) {
 		m.fail(w, r, data, provider.ID(), err)
 		return
 	}
+	// The provider is configured with the core OAuth callback. This flow ends
+	// on the module's own callback route, so the authorization request and the
+	// token exchange both use the module's redirect URL.
+	redirect, err := m.redirectURL(cfg.RedirectURL, provider.ID())
+	if err != nil {
+		m.fail(w, r, data, provider.ID(), err)
+		return
+	}
 	stateID, err := randToken(18)
 	if err != nil {
 		canopy.WriteError(w, err)
@@ -164,6 +251,7 @@ func (m *Module) handleInitiate(w http.ResponseWriter, r *http.Request) {
 		CallbackURL:  m.core.ResolveCallbackURL(req.CallbackURL),
 		BindingHash:  hashToken(binding),
 		IssuedAt:     time.Now().UTC(),
+		RedirectURL:  redirect,
 	}
 	state, err := m.signState(payload)
 	if err != nil {
@@ -195,6 +283,7 @@ func (m *Module) handleInitiate(w http.ResponseWriter, r *http.Request) {
 		Nonce:        nonce,
 		PKCEVerifier: pkce,
 		CallbackURL:  payload.CallbackURL,
+		RedirectURL:  payload.RedirectURL,
 	}
 	authOpts := append(provider.AuthCodeOptions(start), xoauth2.SetAuthURLParam("nonce", nonce))
 	m.core.Audit(r.Context(), canopy.AuditEvent{
@@ -255,7 +344,9 @@ func (m *Module) handleCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	identifier := linkIdentifierPrefix + data.User.ID
 	value := hashToken(state)
-	tok, err := provider.Exchange(r.Context(), code, payload.PKCEVerifier)
+	// The exchange repeats the redirect_uri of the authorization request. The
+	// value comes from the signed state, so it cannot be tampered with.
+	tok, err := m.exchange(r.Context(), provider, code, payload.PKCEVerifier, payload.RedirectURL)
 	if err != nil {
 		m.fail(w, r, data, providerID, canopy.ErrProviderFailure)
 		return

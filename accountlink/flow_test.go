@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -18,10 +19,22 @@ import (
 	"golang.org/x/oauth2"
 )
 
+// configuredRedirect is the redirect URL that the application registers with
+// the provider. It points at the core OAuth callback, like a real
+// deployment, because the core route is the sign-in callback.
+const configuredRedirect = "https://app.example.test/callback/"
+
+// linkRedirect is the module's own OAuth callback. A link must use it.
+const linkRedirect = "https://app.example.test/link-social/callback/"
+
 // fakeProvider is a deterministic OAuth provider modeled on the fake
 // provider in the core oauth tests. It accepts every nonce it issued, so a
 // superseded state fails at the one-time verification instead of at the
 // provider.
+//
+// The provider enforces one registered redirect URI, like Google and Apple
+// do. It records the redirect_uri of the authorization request and rejects an
+// exchange that sends a different redirect_uri.
 type fakeProvider struct {
 	id              string
 	email           string
@@ -29,10 +42,21 @@ type fakeProvider struct {
 	emailUnverified bool
 	nonces          map[string]bool
 	lastVerifier    string
+	// redirect is the redirect URL that the application registered with the
+	// provider.
+	redirect string
+	// authorizedRedirect is the redirect_uri of the last authorization
+	// request.
+	authorizedRedirect string
+	// exchangedRedirect is the redirect_uri of the last token exchange.
+	exchangedRedirect string
 }
 
 func newFakeProvider(id, email, accountID string) *fakeProvider {
-	return &fakeProvider{id: id, email: email, accountID: accountID, nonces: map[string]bool{}}
+	return &fakeProvider{
+		id: id, email: email, accountID: accountID,
+		nonces: map[string]bool{}, redirect: configuredRedirect + id,
+	}
 }
 
 func (p *fakeProvider) ID() string { return p.id }
@@ -41,7 +65,7 @@ func (p *fakeProvider) Config(ctx context.Context) (*oauth2.Config, error) {
 	return &oauth2.Config{
 		ClientID:     "client",
 		ClientSecret: "secret",
-		RedirectURL:  "https://app.example.test/link-social/callback/" + p.id,
+		RedirectURL:  p.redirect,
 		Scopes:       []string{"openid", "email", "profile"},
 		Endpoint: oauth2.Endpoint{
 			AuthURL:  "https://" + p.id + ".example.test/auth",
@@ -52,10 +76,42 @@ func (p *fakeProvider) Config(ctx context.Context) (*oauth2.Config, error) {
 
 func (p *fakeProvider) AuthCodeOptions(opts authoauth.StartOptions) []oauth2.AuthCodeOption {
 	p.nonces[opts.Nonce] = true
-	return []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(opts.PKCEVerifier)}
+	out := []oauth2.AuthCodeOption{oauth2.S256ChallengeOption(opts.PKCEVerifier)}
+	// Record the redirect_uri that AuthCodeURL puts in the authorization
+	// request. AuthCodeURL writes the configured redirect URL first, then
+	// applies these options.
+	p.authorizedRedirect = p.redirect
+	if opts.RedirectURL != "" {
+		p.authorizedRedirect = opts.RedirectURL
+		out = append(out, oauth2.SetAuthURLParam("redirect_uri", opts.RedirectURL))
+	}
+	return out
 }
 
 func (p *fakeProvider) Exchange(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	return p.ExchangeWithRedirect(ctx, code, verifier, "")
+}
+
+// ExchangeWithRedirect implements authoauth.RedirectExchanger. It rejects an
+// exchange whose redirect_uri differs from the redirect_uri of the
+// authorization request, like a real provider does.
+func (p *fakeProvider) ExchangeWithRedirect(
+	ctx context.Context,
+	code string,
+	verifier string,
+	redirectURL string,
+) (*oauth2.Token, error) {
+	effective := redirectURL
+	if effective == "" {
+		effective = p.redirect
+	}
+	p.exchangedRedirect = effective
+	if effective != p.authorizedRedirect {
+		return nil, fmt.Errorf(
+			"redirect_uri mismatch: authorization used %q, exchange used %q",
+			p.authorizedRedirect, effective,
+		)
+	}
 	p.lastVerifier = verifier
 	return &oauth2.Token{
 		AccessToken:  "link-access-token",
@@ -93,18 +149,31 @@ type flowFixture struct {
 
 func newFlow(t *testing.T, opts accountlink.Options) *flowFixture {
 	t.Helper()
-	store := memory.New()
 	provider := newFakeProvider("google", "ada@example.com", "google-sub")
+	f := newFlowWithProvider(t, opts, provider, "")
+	f.provider = provider
+	return f
+}
+
+func newFlowWithProvider(
+	t *testing.T,
+	opts accountlink.Options,
+	provider authoauth.Provider,
+	basePath string,
+) *flowFixture {
+	t.Helper()
+	store := memory.New()
 	auth, err := canopy.New(canopy.Config{
 		Store:     store,
 		Secret:    "dev-secret-with-enough-test-entropy",
+		BasePath:  basePath,
 		Providers: []authoauth.Provider{provider},
 		Modules:   []canopy.Module{accountlink.New(opts)},
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	return &flowFixture{auth: auth, handler: auth.Handler(), store: store, provider: provider}
+	return &flowFixture{auth: auth, handler: auth.Handler(), store: store}
 }
 
 func post(t *testing.T, handler http.Handler, path string, body any, cookies []*http.Cookie) *httptest.ResponseRecorder {
@@ -261,6 +330,144 @@ func TestAccountLinkHappyPathStoresEncryptedTokens(t *testing.T) {
 	}
 	if !strings.HasPrefix(stored.AccessToken, "enc.v1.") {
 		t.Fatalf("access token is not in the encrypted envelope: %q", stored.AccessToken)
+	}
+}
+
+func TestAccountLinkUsesModuleCallbackAsRedirectURI(t *testing.T) {
+	f := newFlow(t, accountlink.Options{})
+	session := f.signUp(t, "ada@example.com")
+	rec := post(t, f.handler, "/link-social", map[string]string{"provider": "google"}, []*http.Cookie{session})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initiate status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	decode(t, rec, &body)
+	u, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := linkRedirect + "google"
+	if got := u.Query().Get("redirect_uri"); got != want {
+		t.Fatalf("authorization redirect_uri = %q, want %q", got, want)
+	}
+	binding := cookie(t, rec, "canopy.link_state")
+
+	done := f.complete(t, u.Query().Get("state"), []*http.Cookie{session, binding})
+	if done.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", done.Code, done.Body.String())
+	}
+	// The exchange must repeat the redirect_uri of the authorization request.
+	if f.provider.exchangedRedirect != want {
+		t.Fatalf("exchange redirect_uri = %q, want %q", f.provider.exchangedRedirect, want)
+	}
+}
+
+// legacyProvider is a custom provider that ignores StartOptions.RedirectURL
+// and does not implement authoauth.RedirectExchanger. It proves the documented
+// fallback: the module exchanges with Provider.Exchange, so the authorization
+// request and the exchange both use the configured redirect URL.
+type legacyProvider struct{ inner *fakeProvider }
+
+func (p legacyProvider) ID() string { return p.inner.ID() }
+
+func (p legacyProvider) Config(ctx context.Context) (*oauth2.Config, error) {
+	return p.inner.Config(ctx)
+}
+
+func (p legacyProvider) AuthCodeOptions(opts authoauth.StartOptions) []oauth2.AuthCodeOption {
+	stripped := opts
+	stripped.RedirectURL = ""
+	return p.inner.AuthCodeOptions(stripped)
+}
+
+func (p legacyProvider) Exchange(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	return p.inner.Exchange(ctx, code, verifier)
+}
+
+func (p legacyProvider) Refresh(ctx context.Context, refreshToken string) (*oauth2.Token, error) {
+	return p.inner.Refresh(ctx, refreshToken)
+}
+
+func (p legacyProvider) Profile(ctx context.Context, token *oauth2.Token, nonce string) (*authoauth.Profile, error) {
+	return p.inner.Profile(ctx, token, nonce)
+}
+
+func TestAccountLinkFallsBackForProviderWithoutRedirectExchanger(t *testing.T) {
+	inner := newFakeProvider("google", "ada@example.com", "google-sub")
+	provider := legacyProvider{inner: inner}
+	if _, ok := any(provider).(authoauth.RedirectExchanger); ok {
+		t.Fatal("legacyProvider must not implement RedirectExchanger")
+	}
+	f := newFlowWithProvider(t, accountlink.Options{}, provider, "")
+	f.provider = inner
+	session := f.signUp(t, "ada@example.com")
+	state, binding := f.initiate(t, session)
+
+	rec := f.complete(t, state, []*http.Cookie{session, binding})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	// Authorization and exchange stay consistent on the configured URL.
+	if inner.exchangedRedirect != configuredRedirect+"google" {
+		t.Fatalf("exchange redirect_uri = %q, want the configured URL", inner.exchangedRedirect)
+	}
+}
+
+func TestAccountLinkRedirectURIHonorsBasePath(t *testing.T) {
+	provider := newFakeProvider("google", "ada@example.com", "google-sub")
+	provider.redirect = "https://app.example.test/auth/callback/google"
+	f := newFlowWithProvider(t, accountlink.Options{}, provider, "/auth")
+	f.provider = provider
+
+	signUp := post(t, f.handler, "/auth/sign-up/email", map[string]string{
+		"name": "Ada", "email": "ada@example.com", "password": "correct-password",
+	}, nil)
+	if signUp.Code != http.StatusOK {
+		t.Fatalf("signup status = %d, body = %s", signUp.Code, signUp.Body.String())
+	}
+	session := cookie(t, signUp, "canopy.session_token")
+
+	rec := post(t, f.handler, "/auth/link-social", map[string]string{"provider": "google"}, []*http.Cookie{session})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initiate status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		URL string `json:"url"`
+	}
+	decode(t, rec, &body)
+	parsed, err := url.Parse(body.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "https://app.example.test/auth/link-social/callback/google"
+	if got := parsed.Query().Get("redirect_uri"); got != want {
+		t.Fatalf("authorization redirect_uri = %q, want %q", got, want)
+	}
+	binding := cookie(t, rec, "canopy.link_state")
+
+	done := get(t, f.handler,
+		"/auth/link-social/callback/google?state="+url.QueryEscape(parsed.Query().Get("state"))+"&code=auth-code",
+		[]*http.Cookie{session, binding})
+	if done.Code != http.StatusOK {
+		t.Fatalf("complete status = %d, body = %s", done.Code, done.Body.String())
+	}
+	if provider.exchangedRedirect != want {
+		t.Fatalf("exchange redirect_uri = %q, want %q", provider.exchangedRedirect, want)
+	}
+}
+
+func TestAccountLinkRejectsProviderRedirectOutsideCallbackRoute(t *testing.T) {
+	provider := newFakeProvider("google", "ada@example.com", "google-sub")
+	provider.redirect = "https://app.example.test/somewhere-else"
+	f := newFlowWithProvider(t, accountlink.Options{}, provider, "")
+	f.provider = provider
+	session := f.signUp(t, "ada@example.com")
+
+	rec := post(t, f.handler, "/link-social", map[string]string{"provider": "google"}, []*http.Cookie{session})
+	if rec.Code != http.StatusBadGateway || errorCode(t, rec) != "PROVIDER_FAILURE" {
+		t.Fatalf("misconfigured initiate status = %d, body = %s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -58,13 +58,29 @@ func (p Provider) AuthCodeOptions(opts oauth.StartOptions) []oauth2.AuthCodeOpti
 	if opts.PKCEVerifier != "" {
 		out = append(out, oauth2.S256ChallengeOption(opts.PKCEVerifier))
 	}
+	if opts.RedirectURL != "" {
+		// AuthCodeURL writes redirect_uri from the configuration first, then
+		// applies these options. This option replaces that value.
+		// ExchangeWithRedirect sends the same value at the token exchange.
+		out = append(out, oauth2.SetAuthURLParam("redirect_uri", opts.RedirectURL))
+	}
 	return out
 }
 
 func (p Provider) Exchange(ctx context.Context, code string, verifier string) (*oauth2.Token, error) {
+	return p.ExchangeWithRedirect(ctx, code, verifier, "")
+}
+
+// ExchangeWithRedirect implements oauth.RedirectExchanger. It sends
+// redirectURL as the redirect_uri of the token exchange. An empty redirectURL
+// keeps the configured redirect URL.
+func (p Provider) ExchangeWithRedirect(ctx context.Context, code string, verifier string, redirectURL string) (*oauth2.Token, error) {
 	cfg, err := p.Config(ctx)
 	if err != nil {
 		return nil, err
+	}
+	if redirectURL != "" {
+		cfg.RedirectURL = redirectURL
 	}
 	opts := []oauth2.AuthCodeOption{}
 	if verifier != "" {
