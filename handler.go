@@ -247,11 +247,11 @@ func (h *httpHandler) signInEmail(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *httpHandler) signOut(w http.ResponseWriter, r *http.Request) {
-	session, _ := h.sessionFromRequest(r)
-	token := ""
-	if session != nil {
-		token = session.Token
-	}
+	// Revoke the presented token itself. Deriving it from a successful
+	// session lookup would skip revocation whenever GetSession rejects a
+	// stored session, for example an unverified account, and would still
+	// report success.
+	token := requestToken(r, h.cfg.Session.CookieName)
 	if err := h.api.SignOut(r.Context(), token); err != nil {
 		writeError(w, err)
 		return

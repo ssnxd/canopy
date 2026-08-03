@@ -413,3 +413,50 @@ func TestOAuthDropsUntrustedRedirect(t *testing.T) {
 		t.Fatalf("untrusted OAuth redirect was kept: %q", out.CallbackURL)
 	}
 }
+
+// Sign-out must revoke the presented session token even when the session
+// cannot be resolved, for example while an account awaits email
+// verification. Reporting success without revoking would leave the token
+// usable once the blocking condition clears.
+func TestSignOutRevokesUnresolvableSession(t *testing.T) {
+	store := newMemoryStore()
+	sender := &testEmailSender{}
+	auth, err := New(Config{
+		Store:                    store,
+		Secret:                   "dev-secret-with-enough-test-entropy",
+		RequireEmailVerification: true,
+		EmailSender:              sender,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := context.Background()
+	body := []byte(`{"name":"Grace","email":"grace@example.com","password":"correct-password"}`)
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/sign-up/email", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	auth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sign-up status = %d", rec.Code)
+	}
+	cookie := rec.Header().Get("Set-Cookie")
+	sessionToken := strings.TrimPrefix(strings.Split(cookie, ";")[0], "canopy.session_token=")
+	if sessionToken == "" {
+		t.Fatal("sign-up did not return a session token")
+	}
+	// Precondition: the session exists but cannot be resolved.
+	if _, err := auth.API().GetSession(ctx, sessionToken); !errors.Is(err, ErrUnauthorized) {
+		t.Fatalf("unverified session err = %v, want ErrUnauthorized", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/sign-out", nil)
+	req.Header.Set("Cookie", cookie)
+	auth.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("sign-out status = %d, body = %s", rec.Code, rec.Body.String())
+	}
+	if _, err := store.FindSessionByToken(ctx, sessionToken); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("session survived sign-out: err = %v, want ErrNotFound", err)
+	}
+}
