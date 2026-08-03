@@ -622,12 +622,39 @@ func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID strin
 	return mapErr(err)
 }
 
-func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error {
+// RemoveMemberAndClearSessionsProtected implements
+// canopy.ProtectedMemberRemovalStore. It locks the organization row, so a
+// concurrent role change cannot commit between the role check and the
+// removal.
+func (s *Store) RemoveMemberAndClearSessionsProtected(ctx context.Context, orgID, userID, protectedRole string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return mapErr(err)
 	}
 	defer tx.Rollback()
+	var organizationID string
+	if err := tx.QueryRowContext(ctx, `
+		select id from organization where id=$1 for update`, orgID).Scan(&organizationID); err != nil {
+		return mapErr(err)
+	}
+	var currentRole string
+	if err := tx.QueryRowContext(ctx, `
+		select role from organization_member
+		where organization_id=$1 and user_id=$2`, orgID, userID).Scan(&currentRole); err != nil {
+		return mapErr(err)
+	}
+	if currentRole == protectedRole {
+		return canopy.ErrForbidden
+	}
+	if err := removeMemberTx(ctx, tx, orgID, userID, now); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
+// removeMemberTx deletes the membership and clears the organization from the
+// member's sessions inside tx.
+func removeMemberTx(ctx context.Context, tx *sql.Tx, orgID, userID string, now time.Time) error {
 	res, err := tx.ExecContext(ctx, `
 		delete from organization_member
 		where organization_id=$1 and user_id=$2`, orgID, userID)
@@ -638,6 +665,18 @@ func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID 
 		update session set active_organization_id='', updated_at=$3
 		where user_id=$1 and active_organization_id=$2`, userID, orgID, now); err != nil {
 		return mapErr(err)
+	}
+	return nil
+}
+
+func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	if err := removeMemberTx(ctx, tx, orgID, userID, now); err != nil {
+		return err
 	}
 	return mapErr(tx.Commit())
 }

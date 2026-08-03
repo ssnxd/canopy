@@ -413,17 +413,32 @@ func (m *Module) handleRemoveMember(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrNotFound)
 		return
 	}
-	// The owner cannot be removed.
+	// The owner cannot be removed. This check is not sufficient on its own,
+	// because a concurrent role change can commit before the removal. A
+	// store that implements ProtectedMemberRemovalStore repeats the check
+	// inside its transaction.
 	if target.Role == RoleOwner {
 		canopy.WriteError(w, canopy.ErrForbidden)
 		return
 	}
-	if err := m.store.RemoveMemberAndClearSessions(r.Context(), req.OrganizationID, req.UserID, time.Now().UTC()); err != nil {
+	if err := m.removeMember(r.Context(), req.OrganizationID, req.UserID); err != nil {
 		canopy.WriteError(w, err)
 		return
 	}
 	m.core.Audit(r.Context(), canopy.AuditEvent{Type: "organization.member.removed", UserID: data.User.ID, Success: true})
 	canopy.WriteJSON(w, http.StatusOK, map[string]bool{"success": true})
+}
+
+// removeMember removes a member. It prefers the store capability that
+// re-checks the protected role inside its own transaction. A store without
+// that capability keeps the earlier behavior, where a concurrent promotion
+// can race the removal.
+func (m *Module) removeMember(ctx context.Context, orgID, userID string) error {
+	now := time.Now().UTC()
+	if store, ok := m.store.(canopy.ProtectedMemberRemovalStore); ok {
+		return store.RemoveMemberAndClearSessionsProtected(ctx, orgID, userID, RoleOwner, now)
+	}
+	return m.store.RemoveMemberAndClearSessions(ctx, orgID, userID, now)
 }
 
 // authorize loads the acting user's membership and checks a permission.

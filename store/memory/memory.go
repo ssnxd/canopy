@@ -678,9 +678,29 @@ func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID strin
 func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID string, now time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	return s.removeMemberLocked(orgID, userID, "", now)
+}
+
+// RemoveMemberAndClearSessionsProtected implements
+// canopy.ProtectedMemberRemovalStore. The mutex covers the role check and the
+// removal, so a concurrent role change cannot commit between them.
+func (s *Store) RemoveMemberAndClearSessionsProtected(ctx context.Context, orgID, userID, protectedRole string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.removeMemberLocked(orgID, userID, protectedRole, now)
+}
+
+// removeMemberLocked removes the membership and clears the organization from
+// the member's sessions. It refuses the removal when protectedRole is not
+// empty and the member holds that role.
+func (s *Store) removeMemberLocked(orgID, userID, protectedRole string, now time.Time) error {
 	key := memberKey(orgID, userID)
-	if s.members[key] == nil {
+	member := s.members[key]
+	if member == nil {
 		return canopy.ErrNotFound
+	}
+	if protectedRole != "" && member.Role == protectedRole {
+		return canopy.ErrForbidden
 	}
 	delete(s.members, key)
 	s.deleteTeamMembershipsLocked(orgID, userID)

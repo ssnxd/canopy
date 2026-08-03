@@ -107,3 +107,24 @@ type OrganizationStore interface {
 	ListTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
 	RemoveTeamMember(ctx context.Context, teamID, userID string) error
 }
+
+// ProtectedMemberRemovalStore is an optional OrganizationStore capability.
+// A store that implements it removes a member only when the member does not
+// hold the protected role at commit time.
+//
+// The organization module checks the role before it removes a member. That
+// check alone is not safe, because a concurrent role change can commit
+// between the check and the removal. An organization that loses its last
+// owner cannot recover, because no route can grant the owner role again.
+//
+// Implement this capability on every production store. The module falls back
+// to RemoveMemberAndClearSessions when a store does not implement it, and
+// that path keeps the race.
+type ProtectedMemberRemovalStore interface {
+	// RemoveMemberAndClearSessionsProtected removes the member and clears
+	// that organization from their active sessions atomically. It re-reads
+	// the member role inside the same transaction. It returns ErrForbidden
+	// when the member holds protectedRole, and ErrNotFound when the member
+	// does not exist.
+	RemoveMemberAndClearSessionsProtected(ctx context.Context, orgID, userID, protectedRole string, now time.Time) error
+}

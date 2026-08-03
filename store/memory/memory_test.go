@@ -506,3 +506,52 @@ func TestCreateLinkedAccountRejectsExpiredVerification(t *testing.T) {
 		t.Fatalf("account err = %v, want ErrNotFound", err)
 	}
 }
+
+func TestProtectedRemovalRefusesProtectedRole(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateMember(ctx, &canopy.Member{
+		ID: "mem_owner", OrganizationID: "org_guard", UserID: "usr_owner",
+		Role: "owner", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	err := store.RemoveMemberAndClearSessionsProtected(ctx, "org_guard", "usr_owner", "owner", now)
+	if err != canopy.ErrForbidden {
+		t.Fatalf("protected removal error = %v, want ErrForbidden", err)
+	}
+	if _, err := store.FindMember(ctx, "org_guard", "usr_owner"); err != nil {
+		t.Fatalf("owner was removed: %v", err)
+	}
+	if err := store.RemoveMemberAndClearSessionsProtected(ctx, "org_guard", "usr_missing", "owner", now); err != canopy.ErrNotFound {
+		t.Fatalf("missing member error = %v, want ErrNotFound", err)
+	}
+}
+
+// A promotion that commits before the removal must make the removal fail.
+// The module checks the role first, so only the store can close this race.
+func TestProtectedRemovalSeesConcurrentPromotion(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	member := &canopy.Member{
+		ID: "mem_race", OrganizationID: "org_race", UserID: "usr_race",
+		Role: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateMember(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	// The caller read the role as admin. The promotion commits next.
+	promoted := *member
+	promoted.Role = "owner"
+	if err := store.UpdateMember(ctx, &promoted); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveMemberAndClearSessionsProtected(ctx, "org_race", "usr_race", "owner", now); err != canopy.ErrForbidden {
+		t.Fatalf("stale removal error = %v, want ErrForbidden", err)
+	}
+	if _, err := store.FindMember(ctx, "org_race", "usr_race"); err != nil {
+		t.Fatalf("promoted owner was removed: %v", err)
+	}
+}

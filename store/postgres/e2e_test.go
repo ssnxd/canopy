@@ -357,3 +357,34 @@ func TestE2ECreateLinkedAccountKeepsVerificationOnConflict(t *testing.T) {
 		t.Fatalf("verification consumed on failed link: %v", err)
 	}
 }
+
+func TestE2EProtectedRemovalRefusesConcurrentPromotion(t *testing.T) {
+	store, ctx := e2eStore(t)
+	now := time.Now().UTC()
+	seedTeamFixture(t, store, "guard", now)
+	seedUser(t, store, "usr_second", "second@example.com", now)
+	member := &canopy.Member{
+		ID: "mem_second", OrganizationID: "org_guard", UserID: "usr_second",
+		Role: "admin", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateMember(ctx, member); err != nil {
+		t.Fatal(err)
+	}
+	// The handler read the role as admin. A promotion commits before the
+	// removal reaches the store.
+	promoted := *member
+	promoted.Role = "owner"
+	if err := store.UpdateMemberRole(ctx, &promoted, "owner"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveMemberAndClearSessionsProtected(ctx, "org_guard", "usr_second", "owner", now); err != canopy.ErrForbidden {
+		t.Fatalf("stale removal error = %v, want ErrForbidden", err)
+	}
+	if _, err := store.FindMember(ctx, "org_guard", "usr_second"); err != nil {
+		t.Fatalf("promoted owner was removed: %v", err)
+	}
+	// A member below the protected role is still removable.
+	if err := store.RemoveMemberAndClearSessionsProtected(ctx, "org_guard", "usr_guard", "nobody", now); err != nil {
+		t.Fatalf("unprotected removal error = %v", err)
+	}
+}
