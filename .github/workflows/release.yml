@@ -12,6 +12,22 @@ jobs:
   release:
     name: GoReleaser
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_DB: canopy_test
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres -d canopy_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      CANOPY_E2E_DATABASE_URL: postgres://postgres:postgres@localhost:5432/canopy_test?sslmode=disable
     steps:
       - name: Checkout
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -28,6 +44,9 @@ jobs:
 
       - name: Verify
         run: make ci
+
+      - name: Run Postgres E2E tests
+        run: make test-e2e
 
       - name: Run GoReleaser
         uses: goreleaser/goreleaser-action@1a80836c5c9d9e5755a25cb59ec6f45a3b5f41a8 # v7.2.1

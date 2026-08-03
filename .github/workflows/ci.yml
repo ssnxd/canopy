@@ -37,6 +37,15 @@ jobs:
       - name: Check vulnerabilities
         run: make vuln
 
+      - name: Test adapter modules with race detector
+        run: make test-adapters
+
+      - name: Vet adapter modules
+        run: make vet-adapters
+
+      - name: Check adapter module vulnerabilities
+        run: make vuln-adapters
+
   postgres-e2e:
     name: Postgres E2E
     runs-on: ubuntu-latest
