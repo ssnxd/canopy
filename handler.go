@@ -419,6 +419,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusConflict, "CONFLICT", "Resource already exists"
 	case errors.Is(err, ErrAccountLinking):
 		status, code, message = http.StatusConflict, "ACCOUNT_LINKING_REQUIRED", "Account linking requires explicit confirmation"
+	case errors.Is(err, ErrAccountLinkMismatch):
+		status, code, message = http.StatusConflict, "ACCOUNT_LINK_MISMATCH", "Provider email does not match the account"
 	case errors.Is(err, ErrNoRefreshToken):
 		status, code, message = http.StatusConflict, "NO_REFRESH_TOKEN", "No provider refresh token is available"
 	case errors.Is(err, ErrProviderAccountNotFound):

@@ -10,7 +10,6 @@ make breaking changes to the public API without a major version increase.
 ### Planned
 
 - Live Google and Apple OAuth integration tests.
-- Explicit account-linking confirmation flow.
 - Magic links and passkeys.
 - Additional OAuth providers.
 - Email provider examples.
@@ -52,6 +51,14 @@ This is the first stable release. It contains the full remediation of the
 
 ### Added
 
+- The `accountlink` module: an explicit account-linking confirmation flow
+  with `POST /link-social` and a provider callback route. Linking requires a
+  recent authentication, a non-impersonated session, and a verified provider
+  email that equals the session user's email. The signed link state is
+  single-use and browser-bound. The optional `AccountLinkStore` capability
+  consumes the state and creates the account atomically; no schema migration
+  is needed. This closes the security audit's residual-risk item on account
+  linking. New typed error `ErrAccountLinkMismatch`.
 - Teams within organizations: `Team` and `TeamMember` entities, seven
   `/organization/*-team*` endpoints, five `team:*` permissions, an optional
   invitation `TeamID` that creates the team membership on acceptance, and

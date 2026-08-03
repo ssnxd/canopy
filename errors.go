@@ -12,6 +12,7 @@ var (
 	ErrProviderFailure            = errors.New("canopy: provider failure")
 	ErrStorageFailure             = errors.New("canopy: storage failure")
 	ErrAccountLinking             = errors.New("canopy: account linking required")
+	ErrAccountLinkMismatch        = errors.New("canopy: provider email does not match account")
 	ErrNoRefreshToken             = errors.New("canopy: no provider refresh token")
 	ErrProviderTokenRefreshFailed = errors.New("canopy: provider token refresh failed")
 	ErrProviderAccountNotFound    = errors.New("canopy: provider account not found")

@@ -37,13 +37,13 @@ Implemented today:
 - Postgres store and in-memory store.
 - Typed public errors for common auth failures.
 - First-party router adapters for chi, Echo, and Gin.
+- Explicit account-linking confirmation flow through the accountlink module.
 
 Not implemented yet:
 
 - Magic link and passkeys. These stay out of scope for v1.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
-- Explicit account-linking confirmation flow. v1 rejects unsafe implicit linking.
 
 ## Install
 
@@ -848,6 +848,38 @@ The `owner` and `admin` roles hold the `team:create`, `team:update`, `team:delet
 
 An invitation accepts an optional `teamId`. When set, acceptance creates the organization membership and the team membership in one atomic operation. When a team is deleted, its pending invitations lose the team assignment and stay acceptable as plain organization invitations. When an organization membership is removed, the database removes the member's team memberships in the same operation. Run migration 4 before you use teams.
 
+## Account Linking
+
+Add the accountlink module for an explicit account-linking confirmation flow. Canopy never links accounts implicitly; without this module, a provider identity that matches an existing account is rejected.
+
+```go
+import "github.com/ssnxd/canopy/accountlink"
+
+auth, err := canopy.New(canopy.Config{
+	Store:     store,
+	Secret:    os.Getenv("CANOPY_SECRET"),
+	Providers: providers,
+	Modules: []canopy.Module{
+		accountlink.New(accountlink.Options{}),
+	},
+})
+```
+
+Endpoints (mounted under the auth handler, both require a session):
+
+- `POST /link-social` — start a link. Body: `provider`, optional `callbackURL`. Returns the provider authorization URL.
+- `GET|POST /link-social/callback/{provider}` — complete the link. Returns `{"success": true, "providerId": ..., "accountId": ...}` or redirects to the callback URL.
+
+The flow fails closed:
+
+- The session must be recent. The default `RecentAuthMaxAge` is 10 minutes; after that, the user must sign in again before linking.
+- An impersonated session cannot link accounts.
+- The provider email must be verified and must equal the session user's email.
+- The link state is signed, single-use, bound to the browser with an HttpOnly cookie, and expires after `LinkStateTTL` (default 10 minutes).
+- A provider account that belongs to another user returns a conflict.
+
+The store consumes the link state and creates the provider account in one atomic operation. No schema migration is needed; the flow reuses the verification and account tables.
+
 ## Admin
 
 Add the admin module for administrator operations.
@@ -1156,6 +1188,7 @@ Canopy exposes typed sentinel errors:
 - `ErrProviderFailure`
 - `ErrStorageFailure`
 - `ErrAccountLinking`
+- `ErrAccountLinkMismatch`
 - `ErrNoRefreshToken`
 - `ErrProviderTokenRefreshFailed`
 - `ErrProviderAccountNotFound`

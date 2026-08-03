@@ -316,6 +316,42 @@ func (s *Store) ApplyPasswordReset(
 	return mapErr(tx.Commit())
 }
 
+// CreateLinkedAccount atomically consumes the one-time link-confirmation
+// verification and creates the provider account in one transaction. It
+// reuses the existing verification and account tables, so it needs no
+// schema migration.
+func (s *Store) CreateLinkedAccount(
+	ctx context.Context,
+	identifier string,
+	value string,
+	now time.Time,
+	account *canopy.Account,
+) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	var verificationID string
+	if err := tx.QueryRowContext(ctx, `
+	delete from verification
+	where identifier=$1 and value=$2 and expires_at > $3
+	returning id`, identifier, value, now).Scan(&verificationID); err != nil {
+		return mapErr(err)
+	}
+	if _, err := tx.ExecContext(ctx, `
+	insert into account (
+		id, user_id, account_id, provider_id, access_token, refresh_token, access_token_expires_at,
+		refresh_token_expires_at, scope, id_token, password, created_at, updated_at
+	) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+		account.ID, account.UserID, account.AccountID, account.ProviderID, account.AccessToken, account.RefreshToken,
+		account.AccessTokenExpiresAt, account.RefreshTokenExpiresAt, account.Scope, account.IDToken, account.Password,
+		account.CreatedAt, account.UpdatedAt); err != nil {
+		return mapErr(err)
+	}
+	return mapErr(tx.Commit())
+}
+
 func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
 	row := s.db.QueryRowContext(ctx, `
 	select user_id, secret, enabled, last_totp_step, created_at, updated_at from two_factor where user_id=$1`, userID)

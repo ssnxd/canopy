@@ -414,3 +414,95 @@ func TestDeleteTeamClearsPendingInvitationTeam(t *testing.T) {
 		t.Fatalf("unexpected team membership after team delete: %v", err)
 	}
 }
+
+func TestCreateLinkedAccountConsumesVerificationAtomically(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	user := &canopy.User{ID: "usr_link", Name: "Ada", Email: "ada@example.com", CreatedAt: now, UpdatedAt: now}
+	if err := store.CreateUser(ctx, user); err != nil {
+		t.Fatal(err)
+	}
+	verification := &canopy.Verification{
+		ID: "alk_link", Identifier: "account_link:usr_link", Value: "state-hash",
+		ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.ReplaceVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+	account := &canopy.Account{
+		ID: "acc_link", UserID: user.ID, AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, account); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindAccount(ctx, "google", "google-sub"); err != nil {
+		t.Fatalf("linked account missing: %v", err)
+	}
+	if _, err := store.ConsumeVerification(ctx, verification.Identifier, verification.Value, now); err != canopy.ErrNotFound {
+		t.Fatalf("verification err = %v, want ErrNotFound", err)
+	}
+	replay := &canopy.Account{
+		ID: "acc_replay", UserID: user.ID, AccountID: "google-sub-2", ProviderID: "google-2",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, replay); err != canopy.ErrNotFound {
+		t.Fatalf("replayed link err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.FindAccount(ctx, "google-2", "google-sub-2"); err != canopy.ErrNotFound {
+		t.Fatalf("replayed account err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestCreateLinkedAccountKeepsVerificationOnConflict(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateAccount(ctx, &canopy.Account{
+		ID: "acc_taken", UserID: "usr_other", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	verification := &canopy.Verification{
+		ID: "alk_conflict", Identifier: "account_link:usr_link", Value: "state-hash",
+		ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.ReplaceVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+	account := &canopy.Account{
+		ID: "acc_dup", UserID: "usr_link", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, account); err != canopy.ErrConflict {
+		t.Fatalf("conflicting link err = %v, want ErrConflict", err)
+	}
+	if _, err := store.ConsumeVerification(ctx, verification.Identifier, verification.Value, now); err != nil {
+		t.Fatalf("verification consumed on failed link: %v", err)
+	}
+}
+
+func TestCreateLinkedAccountRejectsExpiredVerification(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	verification := &canopy.Verification{
+		ID: "alk_expired", Identifier: "account_link:usr_link", Value: "state-hash",
+		ExpiresAt: now.Add(-time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.ReplaceVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+	account := &canopy.Account{
+		ID: "acc_late", UserID: "usr_link", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, account); err != canopy.ErrNotFound {
+		t.Fatalf("expired link err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.FindAccount(ctx, "google", "google-sub"); err != canopy.ErrNotFound {
+		t.Fatalf("account err = %v, want ErrNotFound", err)
+	}
+}

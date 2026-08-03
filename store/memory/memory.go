@@ -364,6 +364,29 @@ func (s *Store) ApplyPasswordReset(
 	return nil
 }
 
+// CreateLinkedAccount atomically consumes the one-time link-confirmation
+// verification and creates the provider account for the existing user.
+func (s *Store) CreateLinkedAccount(
+	ctx context.Context,
+	identifier string,
+	value string,
+	now time.Time,
+	account *canopy.Account,
+) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	verificationKey := identifier + "|" + value
+	verification := s.verifications[verificationKey]
+	if verification == nil || !verification.ExpiresAt.After(now) {
+		return canopy.ErrNotFound
+	}
+	if err := s.createAccountLocked(account); err != nil {
+		return err
+	}
+	delete(s.verifications, verificationKey)
+	return nil
+}
+
 func (s *Store) GetTwoFactor(ctx context.Context, userID string) (*canopy.TwoFactor, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -3,7 +3,9 @@ package canopy
 import (
 	"context"
 	"net/http"
+	"time"
 
+	"github.com/ssnxd/canopy/oauth"
 	"github.com/ssnxd/canopy/sessions"
 )
 
@@ -26,6 +28,20 @@ type Core interface {
 	IssueSession(ctx context.Context, user User, opt SessionOptions) (*SessionData, string, error)
 	Authenticate(r *http.Request) (*SessionData, error)
 	Audit(ctx context.Context, event AuditEvent)
+	// Providers returns the configured OAuth providers keyed by provider
+	// ID. The map is a defensive copy.
+	Providers() map[string]oauth.Provider
+	// ResolveCallbackURL returns callbackURL only when it is safe to use.
+	// It returns an empty string for an untrusted or invalid URL.
+	ResolveCallbackURL(callbackURL string) string
+	// LinkAccount consumes the one-time link-confirmation verification and
+	// creates the provider account for an existing user. The consume and
+	// the create are atomic when the store supports AccountLinkStore.
+	LinkAccount(ctx context.Context, identifier, value string, now time.Time, account *Account) error
+	// UpdateLinkedAccount refreshes the credentials of a linked provider
+	// account. It keeps the stored credentials when a replacement value is
+	// empty.
+	UpdateLinkedAccount(ctx context.Context, account *Account) error
 }
 
 // RuntimeConfig contains the non-secret settings exposed to modules.

@@ -288,3 +288,72 @@ func TestE2EDeleteTeamClearsPendingInvitationTeam(t *testing.T) {
 		t.Fatalf("unexpected team membership after team delete: %v", err)
 	}
 }
+
+func TestE2ECreateLinkedAccountIsAtomicAndSingleUse(t *testing.T) {
+	store, ctx := e2eStore(t)
+	now := time.Now().UTC()
+	seedUser(t, store, "usr_link", "link@example.com", now)
+	verification := &canopy.Verification{
+		ID: "alk_link", Identifier: "account_link:usr_link", Value: "state-hash",
+		ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.ReplaceVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, &canopy.Account{
+		ID: "acc_link", UserID: "usr_link", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindAccount(ctx, "google", "google-sub"); err != nil {
+		t.Fatalf("linked account missing: %v", err)
+	}
+	if _, err := store.ConsumeVerification(ctx, verification.Identifier, verification.Value, now); !errors.Is(err, canopy.ErrNotFound) {
+		t.Fatalf("verification err = %v, want ErrNotFound", err)
+	}
+	// A replayed token must not create a second account.
+	err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, &canopy.Account{
+		ID: "acc_replay", UserID: "usr_link", AccountID: "google-sub-2", ProviderID: "google-2",
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if !errors.Is(err, canopy.ErrNotFound) {
+		t.Fatalf("replayed link err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.FindAccount(ctx, "google-2", "google-sub-2"); !errors.Is(err, canopy.ErrNotFound) {
+		t.Fatalf("replayed account err = %v, want ErrNotFound", err)
+	}
+}
+
+func TestE2ECreateLinkedAccountKeepsVerificationOnConflict(t *testing.T) {
+	store, ctx := e2eStore(t)
+	now := time.Now().UTC()
+	seedUser(t, store, "usr_taken", "taken@example.com", now)
+	seedUser(t, store, "usr_late", "late-link@example.com", now)
+	if err := store.CreateAccount(ctx, &canopy.Account{
+		ID: "acc_taken", UserID: "usr_taken", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	verification := &canopy.Verification{
+		ID: "alk_conflict", Identifier: "account_link:usr_late", Value: "state-hash",
+		ExpiresAt: now.Add(time.Minute), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.ReplaceVerification(ctx, verification); err != nil {
+		t.Fatal(err)
+	}
+
+	err := store.CreateLinkedAccount(ctx, verification.Identifier, verification.Value, now, &canopy.Account{
+		ID: "acc_dup", UserID: "usr_late", AccountID: "google-sub", ProviderID: "google",
+		CreatedAt: now, UpdatedAt: now,
+	})
+	if !errors.Is(err, canopy.ErrConflict) {
+		t.Fatalf("conflicting link err = %v, want ErrConflict", err)
+	}
+	// The rollback keeps the one-time token, so the user can retry.
+	if _, err := store.ConsumeVerification(ctx, verification.Identifier, verification.Value, now); err != nil {
+		t.Fatalf("verification consumed on failed link: %v", err)
+	}
+}

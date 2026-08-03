@@ -253,6 +253,60 @@ func (s *Service) Audit(ctx context.Context, event AuditEvent) {
 	s.audit(ctx, event)
 }
 
+// Providers returns the configured OAuth providers keyed by provider ID.
+// The map is a defensive copy. It satisfies the Core interface.
+func (s *Service) Providers() map[string]oauth.Provider {
+	providers := make(map[string]oauth.Provider, len(s.providers))
+	for id, provider := range s.providers {
+		providers[id] = provider
+	}
+	return providers
+}
+
+// ResolveCallbackURL returns callbackURL only when it is safe to use. It
+// satisfies the Core interface.
+func (s *Service) ResolveCallbackURL(callbackURL string) string {
+	return s.cfg.resolveCallbackURL(callbackURL)
+}
+
+// LinkAccount consumes the one-time link-confirmation verification and
+// creates the provider account for an existing user. It encrypts the
+// provider credentials before they reach the store. It satisfies the Core
+// interface.
+func (s *Service) LinkAccount(ctx context.Context, identifier, value string, now time.Time, account *Account) error {
+	storedAccount, err := encryptAccountTokens(s.cfg.ProviderTokenCodec, account)
+	if err != nil {
+		return err
+	}
+	if store, ok := s.cfg.Store.(AccountLinkStore); ok {
+		return store.CreateLinkedAccount(ctx, identifier, value, now, storedAccount)
+	}
+	if _, err := s.cfg.Store.ConsumeVerification(ctx, identifier, value, now); err != nil {
+		return ErrNotFound
+	}
+	return s.cfg.Store.CreateAccount(ctx, storedAccount)
+}
+
+// UpdateLinkedAccount refreshes the credentials of a linked provider
+// account. It keeps the stored credentials when a replacement value is
+// empty. It satisfies the Core interface.
+func (s *Service) UpdateLinkedAccount(ctx context.Context, account *Account) error {
+	existing, err := s.findAccount(ctx, account.ProviderID, account.AccountID)
+	if err != nil {
+		return err
+	}
+	updateAccountFromProfile(existing, &oauth.Profile{
+		AccessToken:           account.AccessToken,
+		RefreshToken:          account.RefreshToken,
+		AccessTokenExpiresAt:  account.AccessTokenExpiresAt,
+		RefreshTokenExpiresAt: account.RefreshTokenExpiresAt,
+		Scope:                 account.Scope,
+		IDToken:               account.IDToken,
+	})
+	existing.UpdatedAt = time.Now().UTC()
+	return s.updateAccount(ctx, existing)
+}
+
 func (s *Service) SignUpEmail(ctx context.Context, in SignUpEmailInput) (*SessionData, string, error) {
 	if s.cfg.DisableSignup {
 		return nil, "", ErrSignupDisabled
