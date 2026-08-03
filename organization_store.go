@@ -25,6 +25,7 @@ type Member struct {
 }
 
 // Invitation invites an email address to join an organization with a role.
+// An optional TeamID also assigns the invitee to a team on acceptance.
 type Invitation struct {
 	ID             string    `json:"id"`
 	OrganizationID string    `json:"organizationId"`
@@ -32,9 +33,29 @@ type Invitation struct {
 	Role           string    `json:"role"`
 	Status         string    `json:"status"`
 	InviterID      string    `json:"inviterId,omitempty"`
+	TeamID         string    `json:"teamId,omitempty"`
 	ExpiresAt      time.Time `json:"expiresAt"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// Team groups organization members for scoped access. A team belongs to
+// exactly one organization.
+type Team struct {
+	ID             string    `json:"id"`
+	OrganizationID string    `json:"organizationId"`
+	Name           string    `json:"name"`
+	CreatedAt      time.Time `json:"createdAt"`
+	UpdatedAt      time.Time `json:"updatedAt"`
+}
+
+// TeamMember links an organization member to a team.
+type TeamMember struct {
+	ID             string    `json:"id"`
+	TeamID         string    `json:"teamId"`
+	OrganizationID string    `json:"organizationId"`
+	UserID         string    `json:"userId"`
+	CreatedAt      time.Time `json:"createdAt"`
 }
 
 // OrganizationStore is an optional Store capability. The organization
@@ -68,5 +89,20 @@ type OrganizationStore interface {
 	UpdateInvitation(ctx context.Context, invitation *Invitation) error
 	// AcceptInvitation marks a pending, unexpired invitation accepted and
 	// creates the member atomically. An existing membership is preserved.
+	// When the invitation carries a TeamID it also creates the team
+	// membership atomically in the same operation.
 	AcceptInvitation(ctx context.Context, invitationID, email string, now time.Time, member *Member) error
+
+	CreateTeam(ctx context.Context, team *Team) error
+	FindTeamByID(ctx context.Context, id string) (*Team, error)
+	ListTeamsForOrg(ctx context.Context, orgID string) ([]Team, error)
+	UpdateTeam(ctx context.Context, team *Team) error
+	// DeleteTeam removes the team and its team memberships atomically.
+	DeleteTeam(ctx context.Context, orgID, teamID string) error
+	// AddTeamMember creates a team membership. The caller must have already
+	// verified the user is a member of the team's organization.
+	AddTeamMember(ctx context.Context, member *TeamMember) error
+	FindTeamMember(ctx context.Context, teamID, userID string) (*TeamMember, error)
+	ListTeamMembers(ctx context.Context, teamID string) ([]TeamMember, error)
+	RemoveTeamMember(ctx context.Context, teamID, userID string) error
 }

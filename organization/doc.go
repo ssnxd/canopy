@@ -11,7 +11,12 @@
 //
 // An invitation returns a token, which is its id. The application
 // delivers the invitation to the invitee. The invitee accepts it while
-// signed in with the invited email address.
+// signed in with the invited email address. An invitation may carry a
+// TeamID; acceptance then also adds the invitee to that team.
+//
+// Teams group organization members for scoped access. A team belongs to
+// exactly one organization. A team membership carries no role; the
+// organization role stays authoritative.
 //
 // The active organization is stored on the session. Read it from
 // SessionData.Session.ActiveOrganizationID.

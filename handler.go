@@ -437,6 +437,8 @@ func writeError(w http.ResponseWriter, err error) {
 		status, code, message = http.StatusForbidden, "RECENT_AUTHENTICATION_REQUIRED", "Recent authentication is required"
 	case errors.Is(err, ErrOrganizationNotFound):
 		status, code, message = http.StatusNotFound, "ORGANIZATION_NOT_FOUND", "Organization was not found"
+	case errors.Is(err, ErrTeamNotFound):
+		status, code, message = http.StatusNotFound, "TEAM_NOT_FOUND", "Team was not found"
 	case errors.Is(err, ErrNotOrganizationMember):
 		status, code, message = http.StatusForbidden, "NOT_ORGANIZATION_MEMBER", "Not a member of the organization"
 	case errors.Is(err, ErrInvitationInvalid):

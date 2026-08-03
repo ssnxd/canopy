@@ -76,6 +76,13 @@ func (m *Module) Routes() []canopy.Route {
 		{Method: http.MethodGet, Pattern: "/organization/members", RequireSession: true, Handler: http.HandlerFunc(m.handleListMembers)},
 		{Method: http.MethodPost, Pattern: "/organization/update-member-role", RequireSession: true, Handler: http.HandlerFunc(m.handleUpdateMemberRole)},
 		{Method: http.MethodPost, Pattern: "/organization/remove-member", RequireSession: true, Handler: http.HandlerFunc(m.handleRemoveMember)},
+		{Method: http.MethodPost, Pattern: "/organization/create-team", RequireSession: true, Handler: http.HandlerFunc(m.handleCreateTeam)},
+		{Method: http.MethodGet, Pattern: "/organization/list-teams", RequireSession: true, Handler: http.HandlerFunc(m.handleListTeams)},
+		{Method: http.MethodPost, Pattern: "/organization/update-team", RequireSession: true, Handler: http.HandlerFunc(m.handleUpdateTeam)},
+		{Method: http.MethodPost, Pattern: "/organization/delete-team", RequireSession: true, Handler: http.HandlerFunc(m.handleDeleteTeam)},
+		{Method: http.MethodPost, Pattern: "/organization/add-team-member", RequireSession: true, Handler: http.HandlerFunc(m.handleAddTeamMember)},
+		{Method: http.MethodPost, Pattern: "/organization/remove-team-member", RequireSession: true, Handler: http.HandlerFunc(m.handleRemoveTeamMember)},
+		{Method: http.MethodGet, Pattern: "/organization/list-team-members", RequireSession: true, Handler: http.HandlerFunc(m.handleListTeamMembers)},
 	}
 }
 
@@ -206,6 +213,7 @@ func (m *Module) handleInvite(w http.ResponseWriter, r *http.Request) {
 		OrganizationID string `json:"organizationId"`
 		Email          string `json:"email"`
 		Role           string `json:"role"`
+		TeamID         string `json:"teamId"`
 	}
 	if !canopy.DecodeJSON(w, r, &req) {
 		return
@@ -227,6 +235,12 @@ func (m *Module) handleInvite(w http.ResponseWriter, r *http.Request) {
 		canopy.WriteError(w, canopy.ErrInvalidInput)
 		return
 	}
+	if req.TeamID != "" {
+		if _, err := m.teamInOrganization(r.Context(), req.OrganizationID, req.TeamID); err != nil {
+			canopy.WriteError(w, err)
+			return
+		}
+	}
 	now := time.Now().UTC()
 	invID, err := newID("inv")
 	if err != nil {
@@ -235,7 +249,8 @@ func (m *Module) handleInvite(w http.ResponseWriter, r *http.Request) {
 	}
 	invitation := &canopy.Invitation{
 		ID: invID, OrganizationID: req.OrganizationID, Email: email, Role: role,
-		Status: "pending", InviterID: data.User.ID, ExpiresAt: now.Add(m.invitationTTL), CreatedAt: now, UpdatedAt: now,
+		Status: "pending", InviterID: data.User.ID, TeamID: req.TeamID,
+		ExpiresAt: now.Add(m.invitationTTL), CreatedAt: now, UpdatedAt: now,
 	}
 	if err := m.store.CreateInvitation(r.Context(), invitation); err != nil {
 		canopy.WriteError(w, err)

@@ -143,6 +143,34 @@ update account set refresh_token = '' where refresh_token <> '' and refresh_toke
 update account set id_token = '' where id_token <> '' and id_token not like 'enc.v1.%';
 `,
 	},
+	{
+		Version: 4,
+		Name:    "teams",
+		SQL: `
+create table if not exists team (
+	id text primary key,
+	organization_id text not null references organization(id) on delete cascade,
+	name text not null,
+	created_at timestamptz not null,
+	updated_at timestamptz not null
+);
+create index if not exists team_organization_idx on team (organization_id);
+alter table organization_member
+	add constraint organization_member_org_user_unique unique using index organization_member_unique;
+create table if not exists team_member (
+	id text primary key,
+	team_id text not null references team(id) on delete cascade,
+	organization_id text not null,
+	user_id text not null,
+	created_at timestamptz not null,
+	foreign key (organization_id, user_id)
+		references organization_member(organization_id, user_id) on delete cascade
+);
+create unique index if not exists team_member_unique on team_member (team_id, user_id);
+create index if not exists team_member_user_idx on team_member (user_id);
+alter table organization_invitation add column if not exists team_id text not null default '';
+`,
+	},
 }
 
 // Migrations returns the ordered schema migrations for deployments that use an

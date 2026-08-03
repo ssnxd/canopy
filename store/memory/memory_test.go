@@ -171,6 +171,127 @@ func TestUpdateMemberRoleProtectsLastOwner(t *testing.T) {
 	}
 }
 
+func TestAddTeamMemberRejectsConcurrentDuplicate(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	results := make(chan error, 2)
+	for _, id := range []string{"tmem_one", "tmem_two"} {
+		go func(id string) {
+			results <- store.AddTeamMember(ctx, &canopy.TeamMember{
+				ID: id, TeamID: "team_race", OrganizationID: "org_race",
+				UserID: "usr_race", CreatedAt: now,
+			})
+		}(id)
+	}
+	var conflicts, successes int
+	for range 2 {
+		switch err := <-results; err {
+		case nil:
+			successes++
+		case canopy.ErrConflict:
+			conflicts++
+		default:
+			t.Fatalf("AddTeamMember() error = %v", err)
+		}
+	}
+	if successes != 1 || conflicts != 1 {
+		t.Fatalf("successes = %d, conflicts = %d, want 1 and 1", successes, conflicts)
+	}
+}
+
+func TestRemoveMemberAndClearSessionsCascadesTeamMemberships(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateMember(ctx, &canopy.Member{
+		ID: "mem_cascade", OrganizationID: "org_cascade", UserID: "usr_cascade",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_cascade", OrganizationID: "org_cascade", Name: "Ops", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTeamMember(ctx, &canopy.TeamMember{
+		ID: "tmem_cascade", TeamID: "team_cascade", OrganizationID: "org_cascade",
+		UserID: "usr_cascade", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RemoveMemberAndClearSessions(ctx, "org_cascade", "usr_cascade", now); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindTeamMember(ctx, "team_cascade", "usr_cascade"); err != canopy.ErrNotFound {
+		t.Fatalf("team membership error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeleteOrganizationCascadesTeams(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateOrganization(ctx, &canopy.Organization{
+		ID: "org_teams", Name: "Acme", Slug: "acme", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_gone", OrganizationID: "org_teams", Name: "Ops", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTeamMember(ctx, &canopy.TeamMember{
+		ID: "tmem_gone", TeamID: "team_gone", OrganizationID: "org_teams",
+		UserID: "usr_gone", CreatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteOrganization(ctx, "org_teams"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindTeamByID(ctx, "team_gone"); err != canopy.ErrNotFound {
+		t.Fatalf("team error = %v, want ErrNotFound", err)
+	}
+	if _, err := store.FindTeamMember(ctx, "team_gone", "usr_gone"); err != canopy.ErrNotFound {
+		t.Fatalf("team membership error = %v, want ErrNotFound", err)
+	}
+}
+
+func TestAcceptInvitationCreatesTeamMembership(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_invite", OrganizationID: "org_invite", Name: "Ops", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	invitation := &canopy.Invitation{
+		ID: "inv_team", OrganizationID: "org_invite", Email: "ada@example.com",
+		Role: "member", Status: "pending", TeamID: "team_invite",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateInvitation(ctx, invitation); err != nil {
+		t.Fatal(err)
+	}
+	member := &canopy.Member{
+		ID: "mem_team", OrganizationID: "org_invite", UserID: "usr_team",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.AcceptInvitation(ctx, invitation.ID, invitation.Email, now, member); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.FindMember(ctx, "org_invite", "usr_team"); err != nil {
+		t.Fatalf("organization membership missing: %v", err)
+	}
+	if _, err := store.FindTeamMember(ctx, "team_invite", "usr_team"); err != nil {
+		t.Fatalf("team membership missing: %v", err)
+	}
+}
+
 func TestCleanupExpiredRetainsLiveRecords(t *testing.T) {
 	store := New()
 	ctx := context.Background()

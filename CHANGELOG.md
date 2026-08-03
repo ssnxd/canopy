@@ -52,6 +52,12 @@ This is the first stable release. It contains the full remediation of the
 
 ### Added
 
+- Teams within organizations: `Team` and `TeamMember` entities, seven
+  `/organization/*-team*` endpoints, five `team:*` permissions, an optional
+  invitation `TeamID` that creates the team membership on acceptance, and
+  Postgres migration 4. Removing an organization member also removes the
+  member's team memberships in the same operation. Team membership carries no
+  role; the organization role stays authoritative.
 - First-party router adapter modules `adapters/chi`, `adapters/echo`, and
   `adapters/gin`. Each provides `Mount`, `RequireSession`, and
   `OptionalSession`; the Echo and Gin adapters also provide `Session`. The
@@ -112,7 +118,9 @@ This is the first stable release. It contains the full remediation of the
 
 - Run all Postgres migrations before serving the new build. Migration 3 revokes
   legacy plaintext sessions and clears legacy plaintext provider credentials;
-  affected users must sign in or authorize again.
+  affected users must sign in or authorize again. Migration 4 adds the team
+  tables and converts the organization-member unique index to a named
+  constraint.
 - Generate a production secret of at least 32 random bytes. If rotating an
   existing secret, retain the old value in `PreviousSecrets` until signed
   tokens expire and persistent ciphertext has been rewrapped.

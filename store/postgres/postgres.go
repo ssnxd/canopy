@@ -2,7 +2,9 @@ package postgres
 
 import (
 	"context"
+	"crypto/rand"
 	"database/sql"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
@@ -606,23 +608,23 @@ func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID 
 
 func (s *Store) CreateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	_, err := s.db.ExecContext(ctx, `
-insert into organization_invitation (id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at)
-values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+insert into organization_invitation (id, organization_id, email, role, status, inviter_id, team_id, expires_at, created_at, updated_at)
+values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
 		invitation.ID, invitation.OrganizationID, invitation.Email, invitation.Role, invitation.Status,
-		invitation.InviterID, invitation.ExpiresAt, invitation.CreatedAt, invitation.UpdatedAt)
+		invitation.InviterID, invitation.TeamID, invitation.ExpiresAt, invitation.CreatedAt, invitation.UpdatedAt)
 	return mapErr(err)
 }
 
 func (s *Store) FindInvitation(ctx context.Context, id string) (*canopy.Invitation, error) {
 	row := s.db.QueryRowContext(ctx, `
-select id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at
+select id, organization_id, email, role, status, inviter_id, team_id, expires_at, created_at, updated_at
 from organization_invitation where id=$1`, id)
 	return scanInvitation(row)
 }
 
 func (s *Store) ListInvitationsForOrg(ctx context.Context, orgID string) ([]canopy.Invitation, error) {
 	rows, err := s.db.QueryContext(ctx, `
-select id, organization_id, email, role, status, inviter_id, expires_at, created_at, updated_at
+select id, organization_id, email, role, status, inviter_id, team_id, expires_at, created_at, updated_at
 from organization_invitation where organization_id=$1 order by created_at`, orgID)
 	if err != nil {
 		return nil, mapErr(err)
@@ -631,7 +633,7 @@ from organization_invitation where organization_id=$1 order by created_at`, orgI
 	var invitations []canopy.Invitation
 	for rows.Next() {
 		var v canopy.Invitation
-		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+		if err := rows.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.TeamID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 			return nil, mapErr(err)
 		}
 		invitations = append(invitations, v)
@@ -641,8 +643,8 @@ from organization_invitation where organization_id=$1 order by created_at`, orgI
 
 func (s *Store) UpdateInvitation(ctx context.Context, invitation *canopy.Invitation) error {
 	res, err := s.db.ExecContext(ctx, `
-update organization_invitation set email=$2, role=$3, status=$4, expires_at=$5, updated_at=$6 where id=$1`,
-		invitation.ID, invitation.Email, invitation.Role, invitation.Status, invitation.ExpiresAt, invitation.UpdatedAt)
+update organization_invitation set email=$2, role=$3, status=$4, team_id=$5, expires_at=$6, updated_at=$7 where id=$1`,
+		invitation.ID, invitation.Email, invitation.Role, invitation.Status, invitation.TeamID, invitation.ExpiresAt, invitation.UpdatedAt)
 	return mapRows(err, res)
 }
 
@@ -658,13 +660,14 @@ func (s *Store) AcceptInvitation(
 		return mapErr(err)
 	}
 	defer tx.Rollback()
-	res, err := tx.ExecContext(ctx, `
+	var teamID string
+	if err := tx.QueryRowContext(ctx, `
 		update organization_invitation
 		set status='accepted', updated_at=$3
-		where id=$1 and lower(email)=lower($2) and status='pending' and expires_at > $3`,
-		invitationID, strings.TrimSpace(email), now)
-	if err := mapRows(err, res); err != nil {
-		return err
+		where id=$1 and lower(email)=lower($2) and status='pending' and expires_at > $3
+		returning team_id`,
+		invitationID, strings.TrimSpace(email), now).Scan(&teamID); err != nil {
+		return mapErr(err)
 	}
 	if _, err := tx.ExecContext(ctx, `
 		insert into organization_member (id, organization_id, user_id, role, created_at, updated_at)
@@ -673,7 +676,114 @@ func (s *Store) AcceptInvitation(
 		member.ID, member.OrganizationID, member.UserID, member.Role, member.CreatedAt, member.UpdatedAt); err != nil {
 		return mapErr(err)
 	}
+	if teamID != "" {
+		teamMemberID, err := newTeamMemberID()
+		if err != nil {
+			return mapErr(err)
+		}
+		if _, err := tx.ExecContext(ctx, `
+			insert into team_member (id, team_id, organization_id, user_id, created_at)
+			values ($1,$2,$3,$4,$5)
+			on conflict (team_id, user_id) do nothing`,
+			teamMemberID, teamID, member.OrganizationID, member.UserID, member.CreatedAt); err != nil {
+			return mapErr(err)
+		}
+	}
 	return mapErr(tx.Commit())
+}
+
+func (s *Store) CreateTeam(ctx context.Context, team *canopy.Team) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into team (id, organization_id, name, created_at, updated_at) values ($1,$2,$3,$4,$5)`,
+		team.ID, team.OrganizationID, team.Name, team.CreatedAt, team.UpdatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) FindTeamByID(ctx context.Context, id string) (*canopy.Team, error) {
+	row := s.db.QueryRowContext(ctx, `
+select id, organization_id, name, created_at, updated_at from team where id=$1`, id)
+	return scanTeam(row)
+}
+
+func (s *Store) ListTeamsForOrg(ctx context.Context, orgID string) ([]canopy.Team, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, organization_id, name, created_at, updated_at
+from team where organization_id=$1 order by created_at`, orgID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var teams []canopy.Team
+	for rows.Next() {
+		var team canopy.Team
+		if err := rows.Scan(&team.ID, &team.OrganizationID, &team.Name, &team.CreatedAt, &team.UpdatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		teams = append(teams, team)
+	}
+	return teams, mapErr(rows.Err())
+}
+
+func (s *Store) UpdateTeam(ctx context.Context, team *canopy.Team) error {
+	res, err := s.db.ExecContext(ctx, `
+update team set name=$3, updated_at=$4 where id=$1 and organization_id=$2`,
+		team.ID, team.OrganizationID, team.Name, team.UpdatedAt)
+	return mapRows(err, res)
+}
+
+// DeleteTeam removes the team and its team memberships atomically.
+func (s *Store) DeleteTeam(ctx context.Context, orgID, teamID string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return mapErr(err)
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, `delete from team_member where team_id=$1`, teamID); err != nil {
+		return mapErr(err)
+	}
+	res, err := tx.ExecContext(ctx, `delete from team where id=$1 and organization_id=$2`, teamID, orgID)
+	if err := mapRows(err, res); err != nil {
+		return err
+	}
+	return mapErr(tx.Commit())
+}
+
+func (s *Store) AddTeamMember(ctx context.Context, member *canopy.TeamMember) error {
+	_, err := s.db.ExecContext(ctx, `
+insert into team_member (id, team_id, organization_id, user_id, created_at) values ($1,$2,$3,$4,$5)`,
+		member.ID, member.TeamID, member.OrganizationID, member.UserID, member.CreatedAt)
+	return mapErr(err)
+}
+
+func (s *Store) FindTeamMember(ctx context.Context, teamID, userID string) (*canopy.TeamMember, error) {
+	row := s.db.QueryRowContext(ctx, `
+select id, team_id, organization_id, user_id, created_at
+from team_member where team_id=$1 and user_id=$2`, teamID, userID)
+	return scanTeamMember(row)
+}
+
+func (s *Store) ListTeamMembers(ctx context.Context, teamID string) ([]canopy.TeamMember, error) {
+	rows, err := s.db.QueryContext(ctx, `
+select id, team_id, organization_id, user_id, created_at
+from team_member where team_id=$1 order by created_at`, teamID)
+	if err != nil {
+		return nil, mapErr(err)
+	}
+	defer rows.Close()
+	var members []canopy.TeamMember
+	for rows.Next() {
+		var m canopy.TeamMember
+		if err := rows.Scan(&m.ID, &m.TeamID, &m.OrganizationID, &m.UserID, &m.CreatedAt); err != nil {
+			return nil, mapErr(err)
+		}
+		members = append(members, m)
+	}
+	return members, mapErr(rows.Err())
+}
+
+func (s *Store) RemoveTeamMember(ctx context.Context, teamID, userID string) error {
+	res, err := s.db.ExecContext(ctx, `delete from team_member where team_id=$1 and user_id=$2`, teamID, userID)
+	return mapRows(err, res)
 }
 
 func (s *Store) ListUsers(ctx context.Context, q canopy.UserQuery) ([]canopy.User, int, error) {
@@ -745,10 +855,36 @@ func scanMember(row scanner) (*canopy.Member, error) {
 
 func scanInvitation(row scanner) (*canopy.Invitation, error) {
 	var v canopy.Invitation
-	if err := row.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
+	if err := row.Scan(&v.ID, &v.OrganizationID, &v.Email, &v.Role, &v.Status, &v.InviterID, &v.TeamID, &v.ExpiresAt, &v.CreatedAt, &v.UpdatedAt); err != nil {
 		return nil, mapErr(err)
 	}
 	return &v, nil
+}
+
+func scanTeam(row scanner) (*canopy.Team, error) {
+	var team canopy.Team
+	if err := row.Scan(&team.ID, &team.OrganizationID, &team.Name, &team.CreatedAt, &team.UpdatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &team, nil
+}
+
+func scanTeamMember(row scanner) (*canopy.TeamMember, error) {
+	var m canopy.TeamMember
+	if err := row.Scan(&m.ID, &m.TeamID, &m.OrganizationID, &m.UserID, &m.CreatedAt); err != nil {
+		return nil, mapErr(err)
+	}
+	return &m, nil
+}
+
+// newTeamMemberID generates the identifier for a team membership that the
+// store creates on invitation acceptance.
+func newTeamMemberID() (string, error) {
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "tmem_" + strings.ToLower(base64.RawURLEncoding.EncodeToString(buf)), nil
 }
 
 type scanner interface {
@@ -798,6 +934,9 @@ func mapErr(err error) error {
 	var pqErr *pq.Error
 	if errors.As(err, &pqErr) && pqErr.Code == "23505" {
 		return fmt.Errorf("%w: %w", canopy.ErrConflict, err)
+	}
+	if errors.As(err, &pqErr) && pqErr.Code == "23503" {
+		return fmt.Errorf("%w: %w", canopy.ErrInvalidInput, err)
 	}
 	return fmt.Errorf("%w: %w", canopy.ErrStorageFailure, err)
 }

@@ -25,6 +25,7 @@ var (
 	ErrRecentAuthentication       = errors.New("canopy: recent authentication required")
 	ErrOrganizationNotFound       = errors.New("canopy: organization not found")
 	ErrNotOrganizationMember      = errors.New("canopy: not organization member")
+	ErrTeamNotFound               = errors.New("canopy: team not found")
 	ErrInvitationInvalid          = errors.New("canopy: invitation invalid")
 	ErrLastOrganizationOwner      = errors.New("canopy: organization must retain an owner")
 )

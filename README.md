@@ -30,7 +30,7 @@ Implemented today:
 - Sign-out and session revocation.
 - Provider access-token refresh API.
 - Two-factor authentication (TOTP) with backup codes.
-- Organizations, members, roles, and invitations.
+- Organizations, members, roles, teams, and invitations.
 - Admin APIs: list and create users, set roles, ban and unban, list and revoke sessions, and impersonation.
 - Module system for optional features and plugins.
 - Audit logging interface.
@@ -41,7 +41,6 @@ Implemented today:
 Not implemented yet:
 
 - Magic link and passkeys. These stay out of scope for v1.
-- Teams within organizations. This lands in a later module.
 - Built-in rate limiting. Applications should apply rate limiting in HTTP middleware, gateways, or other client-owned request controls.
 - Automatic provider token refresh during session lookup. This is intentionally separate.
 - Explicit account-linking confirmation flow. v1 rejects unsafe implicit linking.
@@ -823,6 +822,24 @@ demoting or removing the last owner.
 
 An invitation returns a token, which is its id. Your application delivers the invitation link to the invitee. The invitee accepts it while signed in with the invited email address. Read the active organization from `SessionData.Session.ActiveOrganizationID`.
 
+### Teams
+
+Teams group organization members for scoped access. A team belongs to exactly one organization. A team member must already be a member of the organization. Team membership carries no role; the organization role stays authoritative for permissions.
+
+Endpoints (mounted under the auth handler, all require a session):
+
+- `POST /organization/create-team` — create a team. Body: `organizationId`, `name`.
+- `GET /organization/list-teams?organizationId=...` — list the teams of an organization.
+- `POST /organization/update-team` — rename a team. Body: `organizationId`, `teamId`, `name`.
+- `POST /organization/delete-team` — delete a team and its memberships. Body: `organizationId`, `teamId`.
+- `POST /organization/add-team-member` — add an organization member to a team. Body: `organizationId`, `teamId`, `userId`.
+- `POST /organization/remove-team-member` — remove a team member. Body: `organizationId`, `teamId`, `userId`.
+- `GET /organization/list-team-members?organizationId=...&teamId=...` — list team members.
+
+The `owner` and `admin` roles hold the `team:create`, `team:update`, `team:delete`, `team:view`, and `team:member:manage` permissions. The `member` role holds `team:view`.
+
+An invitation accepts an optional `teamId`. When set, acceptance creates the organization membership and the team membership in one atomic operation. When an organization membership is removed, the database removes the member's team memberships in the same operation. Run migration 4 before you use teams.
+
 ## Admin
 
 Add the admin module for administrator operations.
@@ -1143,6 +1160,7 @@ Canopy exposes typed sentinel errors:
 - `ErrInvalidTwoFactorCode`
 - `ErrRecentAuthentication`
 - `ErrOrganizationNotFound`
+- `ErrTeamNotFound`
 - `ErrNotOrganizationMember`
 - `ErrInvitationInvalid`
 - `ErrLastOrganizationOwner`

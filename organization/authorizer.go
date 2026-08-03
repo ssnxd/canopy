@@ -15,6 +15,11 @@ const (
 	PermissionRemoveMember       = "member:remove"
 	PermissionUpdateMemberRole   = "member:update-role"
 	PermissionViewMembers        = "member:view"
+	PermissionCreateTeam         = "team:create"
+	PermissionUpdateTeam         = "team:update"
+	PermissionDeleteTeam         = "team:delete"
+	PermissionViewTeams          = "team:view"
+	PermissionManageTeamMembers  = "team:member:manage"
 )
 
 // Authorizer decides if a role may perform a permission.
@@ -28,8 +33,8 @@ type RBAC struct {
 }
 
 // DefaultAuthorizer returns the owner/admin/member RBAC. The owner has
-// every permission. The admin can manage members and update the
-// organization. The member can view members.
+// every permission. The admin can manage members, teams, and update the
+// organization. The member can view members and teams.
 func DefaultAuthorizer() Authorizer {
 	all := map[string]bool{
 		PermissionUpdateOrganization: true,
@@ -38,6 +43,11 @@ func DefaultAuthorizer() Authorizer {
 		PermissionRemoveMember:       true,
 		PermissionUpdateMemberRole:   true,
 		PermissionViewMembers:        true,
+		PermissionCreateTeam:         true,
+		PermissionUpdateTeam:         true,
+		PermissionDeleteTeam:         true,
+		PermissionViewTeams:          true,
+		PermissionManageTeamMembers:  true,
 	}
 	admin := map[string]bool{
 		PermissionUpdateOrganization: true,
@@ -45,9 +55,15 @@ func DefaultAuthorizer() Authorizer {
 		PermissionRemoveMember:       true,
 		PermissionUpdateMemberRole:   true,
 		PermissionViewMembers:        true,
+		PermissionCreateTeam:         true,
+		PermissionUpdateTeam:         true,
+		PermissionDeleteTeam:         true,
+		PermissionViewTeams:          true,
+		PermissionManageTeamMembers:  true,
 	}
 	member := map[string]bool{
 		PermissionViewMembers: true,
+		PermissionViewTeams:   true,
 	}
 	return RBAC{roles: map[string]map[string]bool{
 		RoleOwner:  all,

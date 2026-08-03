@@ -5,6 +5,8 @@ package memory
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"sort"
 	"strings"
 	"sync"
@@ -27,6 +29,8 @@ type Store struct {
 	organizations map[string]*canopy.Organization
 	members       map[string]*canopy.Member
 	invitations   map[string]*canopy.Invitation
+	teams         map[string]*canopy.Team
+	teamMembers   map[string]*canopy.TeamMember
 }
 
 // New returns an empty in-memory store.
@@ -41,10 +45,14 @@ func New() *Store {
 		organizations: map[string]*canopy.Organization{},
 		members:       map[string]*canopy.Member{},
 		invitations:   map[string]*canopy.Invitation{},
+		teams:         map[string]*canopy.Team{},
+		teamMembers:   map[string]*canopy.TeamMember{},
 	}
 }
 
 func memberKey(orgID, userID string) string { return orgID + "|" + userID }
+
+func teamMemberKey(teamID, userID string) string { return teamID + "|" + userID }
 
 func normalizeEmail(email string) string {
 	return strings.ToLower(strings.TrimSpace(email))
@@ -527,6 +535,16 @@ func (s *Store) DeleteOrganization(ctx context.Context, id string) error {
 			delete(s.members, key)
 		}
 	}
+	for key, team := range s.teams {
+		if team.OrganizationID == id {
+			delete(s.teams, key)
+		}
+	}
+	for key, tm := range s.teamMembers {
+		if tm.OrganizationID == id {
+			delete(s.teamMembers, key)
+		}
+	}
 	return nil
 }
 
@@ -608,7 +626,18 @@ func (s *Store) DeleteMember(ctx context.Context, orgID, userID string) error {
 		return canopy.ErrNotFound
 	}
 	delete(s.members, key)
+	s.deleteTeamMembershipsLocked(orgID, userID)
 	return nil
+}
+
+// deleteTeamMembershipsLocked removes the user's team memberships in the
+// organization. The caller must hold the mutex.
+func (s *Store) deleteTeamMembershipsLocked(orgID, userID string) {
+	for key, tm := range s.teamMembers {
+		if tm.OrganizationID == orgID && tm.UserID == userID {
+			delete(s.teamMembers, key)
+		}
+	}
 }
 
 func (s *Store) ClearActiveOrganization(ctx context.Context, orgID, userID string) error {
@@ -631,6 +660,7 @@ func (s *Store) RemoveMemberAndClearSessions(ctx context.Context, orgID, userID 
 		return canopy.ErrNotFound
 	}
 	delete(s.members, key)
+	s.deleteTeamMembershipsLocked(orgID, userID)
 	for _, session := range s.sessions {
 		if session.UserID == userID && session.ActiveOrganizationID == orgID {
 			session.ActiveOrganizationID = ""
@@ -697,13 +727,146 @@ func (s *Store) AcceptInvitation(
 		!strings.EqualFold(strings.TrimSpace(invitation.Email), strings.TrimSpace(email)) {
 		return canopy.ErrNotFound
 	}
+	if invitation.TeamID != "" && s.teams[invitation.TeamID] == nil {
+		return canopy.ErrInvalidInput
+	}
 	if key := memberKey(member.OrganizationID, member.UserID); s.members[key] == nil {
 		memberCopy := *member
 		s.members[key] = &memberCopy
 	}
+	if invitation.TeamID != "" {
+		key := teamMemberKey(invitation.TeamID, member.UserID)
+		if s.teamMembers[key] == nil {
+			id, err := newTeamMemberID()
+			if err != nil {
+				return err
+			}
+			s.teamMembers[key] = &canopy.TeamMember{
+				ID: id, TeamID: invitation.TeamID, OrganizationID: member.OrganizationID,
+				UserID: member.UserID, CreatedAt: now,
+			}
+		}
+	}
 	invitation.Status = "accepted"
 	invitation.UpdatedAt = now
 	return nil
+}
+
+func (s *Store) CreateTeam(ctx context.Context, team *canopy.Team) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.teams[team.ID] != nil {
+		return canopy.ErrConflict
+	}
+	cp := *team
+	s.teams[team.ID] = &cp
+	return nil
+}
+
+func (s *Store) FindTeamByID(ctx context.Context, id string) (*canopy.Team, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if team := s.teams[id]; team != nil {
+		cp := *team
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) ListTeamsForOrg(ctx context.Context, orgID string) ([]canopy.Team, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var teams []canopy.Team
+	for _, team := range s.teams {
+		if team.OrganizationID == orgID {
+			teams = append(teams, *team)
+		}
+	}
+	return teams, nil
+}
+
+func (s *Store) UpdateTeam(ctx context.Context, team *canopy.Team) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current := s.teams[team.ID]
+	if current == nil || current.OrganizationID != team.OrganizationID {
+		return canopy.ErrNotFound
+	}
+	cp := *team
+	s.teams[team.ID] = &cp
+	return nil
+}
+
+// DeleteTeam removes the team and its team memberships atomically.
+func (s *Store) DeleteTeam(ctx context.Context, orgID, teamID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	team := s.teams[teamID]
+	if team == nil || team.OrganizationID != orgID {
+		return canopy.ErrNotFound
+	}
+	delete(s.teams, teamID)
+	for key, tm := range s.teamMembers {
+		if tm.TeamID == teamID {
+			delete(s.teamMembers, key)
+		}
+	}
+	return nil
+}
+
+func (s *Store) AddTeamMember(ctx context.Context, member *canopy.TeamMember) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := teamMemberKey(member.TeamID, member.UserID)
+	if s.teamMembers[key] != nil {
+		return canopy.ErrConflict
+	}
+	cp := *member
+	s.teamMembers[key] = &cp
+	return nil
+}
+
+func (s *Store) FindTeamMember(ctx context.Context, teamID, userID string) (*canopy.TeamMember, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if tm := s.teamMembers[teamMemberKey(teamID, userID)]; tm != nil {
+		cp := *tm
+		return &cp, nil
+	}
+	return nil, canopy.ErrNotFound
+}
+
+func (s *Store) ListTeamMembers(ctx context.Context, teamID string) ([]canopy.TeamMember, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var members []canopy.TeamMember
+	for _, tm := range s.teamMembers {
+		if tm.TeamID == teamID {
+			members = append(members, *tm)
+		}
+	}
+	return members, nil
+}
+
+func (s *Store) RemoveTeamMember(ctx context.Context, teamID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := teamMemberKey(teamID, userID)
+	if s.teamMembers[key] == nil {
+		return canopy.ErrNotFound
+	}
+	delete(s.teamMembers, key)
+	return nil
+}
+
+// newTeamMemberID generates the identifier for a team membership that the
+// store creates on invitation acceptance.
+func newTeamMemberID() (string, error) {
+	buf := make([]byte, 18)
+	if _, err := rand.Read(buf); err != nil {
+		return "", err
+	}
+	return "tmem_" + strings.ToLower(base64.RawURLEncoding.EncodeToString(buf)), nil
 }
 
 func (s *Store) ListUsers(ctx context.Context, q canopy.UserQuery) ([]canopy.User, int, error) {
