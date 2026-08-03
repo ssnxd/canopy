@@ -140,6 +140,8 @@ go get github.com/ssnxd/canopy/adapters/echo
 go get github.com/ssnxd/canopy/adapters/gin
 ```
 
+The adapter modules receive their own version tags after the core `v1.0.0` tag. Use the tagged adapter releases; development snapshots pin the core module with a local replace directive.
+
 Each adapter has the same three-part surface:
 
 - `Mount(router, auth)` registers the Canopy handler at `Config.BasePath`. Do not use `http.StripPrefix`.
@@ -149,12 +151,18 @@ Each adapter has the same three-part surface:
 The Gin and Echo adapters also provide `Session(c)`, which reads the session from the framework context. With chi, read the session with `canopy.SessionFromContext(r.Context())`.
 
 ```go
+import canopygin "github.com/ssnxd/canopy/adapters/gin"
+
 router := gin.New()
 canopygin.Mount(router, auth)
 
 protected := router.Group("/", canopygin.RequireSession(auth))
 protected.GET("/me", func(c *gin.Context) {
-	data, _ := canopygin.Session(c)
+	data, ok := canopygin.Session(c)
+	if !ok {
+		c.AbortWithStatus(http.StatusUnauthorized)
+		return
+	}
 	c.JSON(http.StatusOK, data.User)
 })
 ```
@@ -838,7 +846,7 @@ Endpoints (mounted under the auth handler, all require a session):
 
 The `owner` and `admin` roles hold the `team:create`, `team:update`, `team:delete`, `team:view`, and `team:member:manage` permissions. The `member` role holds `team:view`.
 
-An invitation accepts an optional `teamId`. When set, acceptance creates the organization membership and the team membership in one atomic operation. When an organization membership is removed, the database removes the member's team memberships in the same operation. Run migration 4 before you use teams.
+An invitation accepts an optional `teamId`. When set, acceptance creates the organization membership and the team membership in one atomic operation. When a team is deleted, its pending invitations lose the team assignment and stay acceptable as plain organization invitations. When an organization membership is removed, the database removes the member's team memberships in the same operation. Run migration 4 before you use teams.
 
 ## Admin
 

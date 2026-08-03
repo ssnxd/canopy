@@ -741,6 +741,10 @@ func (s *Store) DeleteTeam(ctx context.Context, orgID, teamID string) error {
 	if _, err := tx.ExecContext(ctx, `delete from team_member where team_id=$1`, teamID); err != nil {
 		return mapErr(err)
 	}
+	if _, err := tx.ExecContext(ctx, `
+update organization_invitation set team_id = '' where team_id=$1 and organization_id=$2`, teamID, orgID); err != nil {
+		return mapErr(err)
+	}
 	res, err := tx.ExecContext(ctx, `delete from team where id=$1 and organization_id=$2`, teamID, orgID)
 	if err := mapRows(err, res); err != nil {
 		return err

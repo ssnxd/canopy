@@ -259,3 +259,32 @@ func randomHex(t *testing.T, n int) string {
 	}
 	return hex.EncodeToString(buf)
 }
+
+func TestE2EDeleteTeamClearsPendingInvitationTeam(t *testing.T) {
+	store, ctx := e2eStore(t)
+	now := time.Now().UTC()
+	seedTeamFixture(t, store, "clear", now)
+	if err := store.CreateInvitation(ctx, &canopy.Invitation{
+		ID: "inv_clear", OrganizationID: "org_clear", Email: "late@example.com",
+		Role: "member", Status: "pending", TeamID: "team_clear",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteTeam(ctx, "org_clear", "team_clear"); err != nil {
+		t.Fatal(err)
+	}
+	seedUser(t, store, "usr_late", "late@example.com", now)
+	if err := store.AcceptInvitation(ctx, "inv_clear", "late@example.com", now, &canopy.Member{
+		ID: "mem_late", OrganizationID: "org_clear", UserID: "usr_late",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatalf("AcceptInvitation() after team delete error = %v", err)
+	}
+	if _, err := store.FindMember(ctx, "org_clear", "usr_late"); err != nil {
+		t.Fatalf("organization membership missing: %v", err)
+	}
+	if _, err := store.FindTeamMember(ctx, "team_clear", "usr_late"); err != canopy.ErrNotFound {
+		t.Fatalf("unexpected team membership after team delete: %v", err)
+	}
+}

@@ -811,12 +811,24 @@ func (s *Store) DeleteTeam(ctx context.Context, orgID, teamID string) error {
 			delete(s.teamMembers, key)
 		}
 	}
+	for _, inv := range s.invitations {
+		if inv.TeamID == teamID && inv.OrganizationID == orgID {
+			inv.TeamID = ""
+		}
+	}
 	return nil
 }
 
 func (s *Store) AddTeamMember(ctx context.Context, member *canopy.TeamMember) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	team := s.teams[member.TeamID]
+	if team == nil || team.OrganizationID != member.OrganizationID {
+		return canopy.ErrInvalidInput
+	}
+	if s.members[memberKey(member.OrganizationID, member.UserID)] == nil {
+		return canopy.ErrInvalidInput
+	}
 	key := teamMemberKey(member.TeamID, member.UserID)
 	if s.teamMembers[key] != nil {
 		return canopy.ErrConflict

@@ -175,6 +175,17 @@ func TestAddTeamMemberRejectsConcurrentDuplicate(t *testing.T) {
 	store := New()
 	ctx := context.Background()
 	now := time.Now().UTC()
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_race", OrganizationID: "org_race", Name: "Race", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateMember(ctx, &canopy.Member{
+		ID: "mem_race", OrganizationID: "org_race", UserID: "usr_race",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
 	results := make(chan error, 2)
 	for _, id := range []string{"tmem_one", "tmem_two"} {
 		go func(id string) {
@@ -240,6 +251,12 @@ func TestDeleteOrganizationCascadesTeams(t *testing.T) {
 	}
 	if err := store.CreateTeam(ctx, &canopy.Team{
 		ID: "team_gone", OrganizationID: "org_teams", Name: "Ops", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CreateMember(ctx, &canopy.Member{
+		ID: "mem_gone", OrganizationID: "org_teams", UserID: "usr_gone",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -330,5 +347,70 @@ func TestCleanupExpiredRetainsLiveRecords(t *testing.T) {
 	}
 	if _, err := store.ConsumeVerification(ctx, "cleanup", "live", now); err != nil {
 		t.Fatalf("live verification error = %v", err)
+	}
+}
+
+func TestAddTeamMemberRequiresTeamAndMembership(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	member := &canopy.TeamMember{
+		ID: "tmem_guard", TeamID: "team_guard", OrganizationID: "org_guard",
+		UserID: "usr_guard", CreatedAt: now,
+	}
+	if err := store.AddTeamMember(ctx, member); err != canopy.ErrInvalidInput {
+		t.Fatalf("AddTeamMember() without team error = %v, want ErrInvalidInput", err)
+	}
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_guard", OrganizationID: "org_guard", Name: "Guard", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTeamMember(ctx, member); err != canopy.ErrInvalidInput {
+		t.Fatalf("AddTeamMember() without membership error = %v, want ErrInvalidInput", err)
+	}
+	if err := store.CreateMember(ctx, &canopy.Member{
+		ID: "mem_guard", OrganizationID: "org_guard", UserID: "usr_guard",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AddTeamMember(ctx, member); err != nil {
+		t.Fatalf("AddTeamMember() error = %v", err)
+	}
+}
+
+func TestDeleteTeamClearsPendingInvitationTeam(t *testing.T) {
+	store := New()
+	ctx := context.Background()
+	now := time.Now().UTC()
+	if err := store.CreateTeam(ctx, &canopy.Team{
+		ID: "team_gone", OrganizationID: "org_gone", Name: "Gone", CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	invitation := &canopy.Invitation{
+		ID: "inv_gone", OrganizationID: "org_gone", Email: "ada@example.com",
+		Role: "member", Status: "pending", TeamID: "team_gone",
+		ExpiresAt: now.Add(time.Hour), CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.CreateInvitation(ctx, invitation); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.DeleteTeam(ctx, "org_gone", "team_gone"); err != nil {
+		t.Fatal(err)
+	}
+	member := &canopy.Member{
+		ID: "mem_gone", OrganizationID: "org_gone", UserID: "usr_gone",
+		Role: "member", CreatedAt: now, UpdatedAt: now,
+	}
+	if err := store.AcceptInvitation(ctx, invitation.ID, invitation.Email, now, member); err != nil {
+		t.Fatalf("AcceptInvitation() after team delete error = %v", err)
+	}
+	if _, err := store.FindMember(ctx, "org_gone", "usr_gone"); err != nil {
+		t.Fatalf("organization membership missing: %v", err)
+	}
+	if _, err := store.FindTeamMember(ctx, "team_gone", "usr_gone"); err != canopy.ErrNotFound {
+		t.Fatalf("unexpected team membership after team delete: %v", err)
 	}
 }

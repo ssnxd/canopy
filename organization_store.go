@@ -97,7 +97,8 @@ type OrganizationStore interface {
 	FindTeamByID(ctx context.Context, id string) (*Team, error)
 	ListTeamsForOrg(ctx context.Context, orgID string) ([]Team, error)
 	UpdateTeam(ctx context.Context, team *Team) error
-	// DeleteTeam removes the team and its team memberships atomically.
+	// DeleteTeam removes the team and its team memberships and clears the
+	// team from pending invitations, all atomically.
 	DeleteTeam(ctx context.Context, orgID, teamID string) error
 	// AddTeamMember creates a team membership. The caller must have already
 	// verified the user is a member of the team's organization.
