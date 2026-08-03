@@ -14,6 +14,60 @@ make breaking changes to the public API without a major version increase.
 - Additional OAuth providers.
 - Email provider examples.
 - MySQL and SQLite stores.
+- Cleanup for expired organization invitations.
+- An actor field on administrator audit events.
+
+## [1.0.1] - 2026-08-03
+
+A post-release audit of v1.0.0 covered the complete v1.0.0 surface, including
+the teams feature, the `accountlink` module, and the router adapters. This
+release fixes every defect that the audit confirmed as release-blocking. See
+report 2 in `SECURITY_AUDIT.md`. No public API is removed or changed.
+
+### Security
+
+- Reject a relative callback URL that a browser can fold into another origin.
+  `resolveCallbackURL` accepted values such as `/\host` and paths that hold a
+  control character. A browser folds a backslash into a slash and strips
+  control characters, so those values resolved to a foreign host. A relative
+  callback URL must now start with exactly one slash and must contain no
+  backslash, no percent-encoded backslash, and no control character.
+- Remove a member only when the member does not hold the protected role at
+  commit time. The role-update path already held this guard; the removal path
+  did not. A concurrent promotion could leave an organization without an
+  owner, which no route can undo.
+- Revoke the presented token on sign-out. The handler derived the token from a
+  successful session lookup, so it reported success without revoking whenever
+  the session could not be resolved, for example an account that awaits email
+  verification.
+
+### Fixed
+
+- Account linking now completes with the built-in Google and Apple providers.
+  The authorization request carried the provider's configured redirect URL,
+  which addresses the core OAuth callback route, so the provider returned the
+  user to the wrong route and the link failed with an invalid-state error.
+
+### Added
+
+- `oauth.StartOptions.RedirectURL` replaces the configured redirect URL for
+  one authorization request and its matching token exchange.
+- `oauth.RedirectExchanger`, an optional provider capability that exchanges a
+  code with that same redirect URL. Both built-in providers implement it.
+- `canopy.ProtectedMemberRemovalStore`, an optional store capability that
+  re-reads the member role inside its own transaction before removal. Both
+  built-in stores implement it. A store without it keeps the earlier
+  behavior, which holds the race.
+
+### Changed
+
+- Pull requests now build, vet, and scan the three router adapter modules.
+  The release workflow now runs the Postgres end-to-end suite before it
+  publishes. Neither check would have caught the account-linking defect.
+- `SECURITY_AUDIT.md` now holds two dated reports. The 2026-07-24 review is a
+  frozen record with a scope limitation. Two of its remediation claims are
+  marked partially remediated, with pointers to the findings that complete
+  them.
 
 ## [1.0.0] - 2026-08-03
 
